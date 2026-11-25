@@ -31,6 +31,8 @@ pub struct JSONSerializer {
     property_list: Option<Vec<Handle<PropertyKey>>>,
     indent: u32,
     gap: Wtf8String,
+    /// Maximum nesting depth accepted by `JSON.stringify` (M2 hardening).
+    max_depth: u32,
 }
 
 impl JSONSerializer {
@@ -38,6 +40,7 @@ impl JSONSerializer {
         replacer_function: Option<Handle<ObjectValue>>,
         property_list: Option<Vec<Handle<PropertyKey>>>,
         gap: Wtf8String,
+        max_depth: u32,
     ) -> Self {
         JSONSerializer {
             builder: Wtf8String::new(),
@@ -46,6 +49,7 @@ impl JSONSerializer {
             property_list,
             indent: 0,
             gap,
+            max_depth,
         }
     }
 
@@ -63,6 +67,16 @@ impl JSONSerializer {
         key: Handle<PropertyKey>,
         holder: Handle<ObjectValue>,
     ) -> EvalResult<bool> {
+        // Stop before recursing into another container: deeply nested input must not exhaust the
+        // Rust stack. The error is a catchable RangeError, not an uncatchable Terminated.
+        if self.stack.len() as u32 >= self.max_depth {
+            let error = crate::runtime::error::range_error_value(
+                cx,
+                "JSON.stringify nesting exceeds the configured depth limit",
+            )?;
+            return crate::eval_err!(error);
+        }
+
         let mut value = get(cx, holder, key)?;
 
         // Call toJSON method if one is present

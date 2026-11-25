@@ -173,7 +173,7 @@ pub fn type_error_value(cx: Context, message: &str) -> EvalResult<Handle<Value>>
     Ok(TypeError::new_with_message(cx, message.to_owned())?.into())
 }
 
-fn reference_error_value(cx: Context, message: &str) -> EvalResult<Handle<Value>> {
+pub fn reference_error_value(cx: Context, message: &str) -> EvalResult<Handle<Value>> {
     Ok(ReferenceError::new_with_message(cx, message.to_owned())?.into())
 }
 

@@ -92,7 +92,8 @@ impl JSONObject {
             return syntax_error(cx, "JSON.rawJSON argument has unexpected last code unit");
         }
 
-        let has_successful_parse = parse_json(text_string)?.is_some();
+        let has_successful_parse =
+            parse_json(cx, text_string, cx.options.max_json_depth)?.is_some();
 
         if !has_successful_parse {
             return syntax_error(cx, "JSON.rawJSON argument is not valid JSON");
@@ -119,6 +120,8 @@ impl JSONObject {
     runtime_fn! {
     /// JSON.stringify (https://tc39.es/ecma262/#sec-json.stringify)
     fn stringify(cx, _, arguments) {
+        let _native_guard = crate::runtime::native_guard::NativeGuard::new(cx)?;
+
         // Replacer arg may be a function or property list
         let replacer_arg = arguments.get(cx, 1);
 
@@ -212,7 +215,12 @@ impl JSONObject {
         let value = arguments.get(cx, 0);
         must!(create_data_property_or_throw(cx, wrapper, cx.names.empty_string(), value));
 
-        let mut serializer = JSONSerializer::new(replacer_function, property_list, gap);
+        let mut serializer = JSONSerializer::new(
+            replacer_function,
+            property_list,
+            gap,
+            cx.options.max_json_depth,
+        );
         if !serializer.serialize_json_property(cx, cx.names.empty_string(), wrapper)? {
             return Ok(cx.undefined());
         }
@@ -230,11 +238,12 @@ pub fn json_parse(
     let text_string = to_string(cx, text)?;
 
     // Parse JSON into an AST, not yet allocated on heap
-    let json_value = if let Some(json_value) = parse_json(text_string)? {
-        json_value
-    } else {
-        return syntax_error(cx, "JSON.parse parsed invalid JSON");
-    };
+    let json_value =
+        if let Some(json_value) = parse_json(cx, text_string, cx.options.max_json_depth)? {
+            json_value
+        } else {
+            return syntax_error(cx, "JSON.parse parsed invalid JSON");
+        };
 
     // If reviver argument is provided then we must create a JSONParseRecord so that the
     // initially parsed structure can be associated with the resulting values.

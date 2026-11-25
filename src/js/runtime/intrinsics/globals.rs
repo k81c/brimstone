@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// SetDefaultGlobalBindings (https://tc39.es/ecma262/#sec-setdefaultglobalbindings)
-pub fn set_default_global_bindings(cx: Context, realm: Handle<Realm>) -> EvalResult<()> {
+pub fn set_default_global_bindings(mut cx: Context, realm: Handle<Realm>) -> EvalResult<()> {
     handle_scope!(cx, {
         macro_rules! value_prop {
             ($name:expr, $value:expr, $is_writable:expr, $is_enumerable:expr, $is_configurable:expr) => {{
@@ -110,6 +110,10 @@ pub fn set_default_global_bindings(cx: Context, realm: Handle<Realm>) -> EvalRes
         func_prop!(cx.names.is_finite(), RuntimeFunction::global_object_is_finite, 1);
         intrinsic_prop!(cx.names.parse_float(), ParseFloat);
         intrinsic_prop!(cx.names.parse_int(), ParseInt);
+
+        // Embed API: entry point for dynamically installed host functions (M2 F7).
+        let host_call_name = PropertyKey::string_handle(cx, cx.alloc_string("__host_call__")?)?;
+        func_prop!(host_call_name, RuntimeFunction::HostCall, 1);
 
         // Constructor Properties of the Global Object (https://tc39.es/ecma262/#sec-constructor-properties-of-the-global-object)
         intrinsic_prop!(cx.names.aggregate_error(), AggregateErrorConstructor);

@@ -91,7 +91,13 @@ fn console_method_impl(
         formatted.push(to_console_string(cx, argument_handle, &opts)?);
     }
 
-    println!("{}", formatted.join(" "));
+    let line = formatted.join(" ");
+
+    if let Some(buffer) = cx.options.console_buffer.as_ref() {
+        buffer.lock().unwrap().write_line(&line);
+    } else {
+        println!("{}", line);
+    }
 
     Ok(cx.undefined())
 }

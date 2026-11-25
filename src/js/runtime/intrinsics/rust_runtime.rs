@@ -1067,6 +1067,8 @@ rust_runtime_functions!(
     // Shared runtime functions
     (ReturnThis, return_this),
     (ReturnUndefined, return_undefined),
+    // Dynamically installed host functions (M2 F7)
+    (HostCall, host_call),
 );
 
 impl RuntimeFunction {
@@ -1085,6 +1087,27 @@ runtime_fn! {
 /// Rust runtime function that simply returns `undefined`.
 fn return_undefined(cx, _, _) {
     Ok(cx.undefined())
+}}
+
+runtime_fn! {
+/// Dispatch a dynamically installed host function by name (M2 F7).
+///
+/// The first argument is the name; remaining arguments are forwarded to the callback installed by
+/// `Context::install_host_function`. An unknown name throws a catchable `ReferenceError`.
+fn host_call(cx, _, arguments) {
+    let name_value = arguments.get(cx, 0);
+    if !name_value.is_string() {
+        return crate::runtime::error::type_error(cx, "__host_call__ expects a name string");
+    }
+    let name_wtf8 = name_value.as_string().to_wtf8_string()?;
+    let name = String::from_utf8_lossy(name_wtf8.as_bytes()).into_owned();
+
+    let mut args = Vec::with_capacity(arguments.len().saturating_sub(1));
+    for index in 1..arguments.len() {
+        args.push(arguments.get(cx, index));
+    }
+
+    cx.call_host_function(&name, &args)
 }}
 
 /// Whether a value is the builtin function for a particular runtime function.

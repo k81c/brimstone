@@ -1,7 +1,7 @@
 use std::{
     fmt,
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use clap::Parser;
@@ -86,6 +86,40 @@ pub struct Args {
     pub script_args: Vec<String>,
 }
 
+/// Captured console output for embedded queries (M2 F6).
+///
+/// The host installs a shared buffer through `OptionsBuilder::console_buffer`; the engine writes
+/// `console.*` lines into it instead of stdout and the host drains it through `Context::drain_console`.
+#[derive(Default)]
+pub struct ConsoleBuffer {
+    /// UTF-8 log bytes captured so far.
+    pub bytes: Vec<u8>,
+    /// Hard cap on `bytes` (normally 256 KiB).
+    pub cap: usize,
+    /// Number of bytes that did not fit into the buffer.
+    pub truncated: usize,
+}
+
+impl ConsoleBuffer {
+    pub fn new(cap: usize) -> Self {
+        Self { bytes: Vec::new(), cap, truncated: 0 }
+    }
+
+    /// Append one formatted line, counting any overflow toward `truncated`.
+    pub fn write_line(&mut self, line: &str) {
+        let remaining = self.cap.saturating_sub(self.bytes.len());
+        // One byte is reserved for the newline.
+        let available = remaining.saturating_sub(1);
+        let take = line.len().min(available);
+        self.bytes.extend_from_slice(&line.as_bytes()[..take]);
+        self.bytes.push(b'\n');
+        let skipped = line.len() - take;
+        if skipped > 0 {
+            self.truncated += skipped;
+        }
+    }
+}
+
 /// Stack and depth limits for one execution (M0 embed API).
 ///
 /// `max_slots` is the total number of VM stack slots allocated when the context is created;
@@ -139,6 +173,9 @@ pub struct Options {
     /// Buffer to write all dumped output into instead of stdout
     pub dump_buffer: Option<Mutex<String>>,
 
+    /// Buffer to write console output into instead of stdout (M2 F6).
+    pub console_buffer: Option<Arc<Mutex<ConsoleBuffer>>>,
+
     /// The minimum heap size in bytes
     pub min_heap_size: usize,
 
@@ -147,6 +184,12 @@ pub struct Options {
 
     /// Stack and depth limits for this context (M0 embed API)
     pub stack: StackConfig,
+
+    /// Maximum nesting depth accepted by `JSON.parse` (M2 hardening).
+    pub max_json_depth: u32,
+
+    /// Maximum RegExp VM instructions executed in one match (M2 hardening).
+    pub max_regex_steps: u64,
 
     /// Whether to use colors when printing to the terminal
     pub no_color: bool,
@@ -203,9 +246,12 @@ impl OptionsBuilder {
             print_regexp_bytecode: false,
             regexp_dotfile_directory: None,
             dump_buffer: None,
+            console_buffer: None,
             min_heap_size: DEFAULT_MIN_HEAP_SIZE,
             max_heap_size: DEFAULT_MAX_HEAP_SIZE,
             stack: StackConfig::default(),
+            max_json_depth: 1024,
+            max_regex_steps: 10_000_000,
             no_color: false,
             parse_stats: false,
             expose_gc: false,
@@ -276,6 +322,11 @@ impl OptionsBuilder {
                 "max_backtrace_frames must be non-zero".to_string(),
             ));
         }
+        if self.0.max_json_depth == 0 || self.0.max_regex_steps == 0 {
+            return Err(OptionCreationError::new(
+                "JSON depth and RegExp step budgets must be non-zero".to_string(),
+            ));
+        }
 
         Ok(())
     }
@@ -326,6 +377,18 @@ impl OptionsBuilder {
         self
     }
 
+    /// Maximum nesting depth for `JSON.parse`.
+    pub fn max_json_depth(mut self, depth: u32) -> Self {
+        self.0.max_json_depth = depth;
+        self
+    }
+
+    /// Maximum number of RegExp VM instructions per match.
+    pub fn max_regex_steps(mut self, steps: u64) -> Self {
+        self.0.max_regex_steps = steps;
+        self
+    }
+
     /// Recommended defaults for short-lived embedded queries: 8 MiB / 128 MiB heap and the
     /// standard `StackConfig`. The upstream CLI defaults are left unchanged.
     pub fn for_embedding(self) -> Self {
@@ -336,6 +399,12 @@ impl OptionsBuilder {
 
     pub fn dump_buffer(mut self, dump_buffer: Option<Mutex<String>>) -> Self {
         self.0.dump_buffer = dump_buffer;
+        self
+    }
+
+    /// Install a shared console capture buffer for embedded queries.
+    pub fn console_buffer(mut self, buffer: Option<Arc<Mutex<ConsoleBuffer>>>) -> Self {
+        self.0.console_buffer = buffer;
         self
     }
 

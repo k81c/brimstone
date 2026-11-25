@@ -38,13 +38,27 @@ pub enum JSONParseRecordChildren {
     Properties(Vec<(Handle<PropertyKey>, JSONParseRecord)>),
 }
 
-pub fn parse_json(source_text: Handle<StringValue>) -> EvalResult<Option<JSONValue>> {
+pub fn parse_json(
+    cx: Context,
+    source_text: Handle<StringValue>,
+    max_depth: u32,
+) -> EvalResult<Option<JSONValue>> {
+    let _native_guard = crate::runtime::native_guard::NativeGuard::new(cx)?;
+
     let mut lexer = StringLexer::new(source_text)?;
 
     // Could have leading whitespace
     skip_json_whitespace(&mut lexer);
 
-    let Some(value) = parse_json_value(&mut lexer) else {
+    let mut depth_exceeded = false;
+    let Some(value) = parse_json_value(&mut lexer, 1, max_depth, &mut depth_exceeded) else {
+        if depth_exceeded {
+            let error = crate::runtime::error::range_error_value(
+                cx,
+                "JSON nesting exceeds the configured depth limit",
+            )?;
+            return crate::eval_err!(error);
+        }
         return Ok(None);
     };
 
@@ -59,12 +73,24 @@ pub fn parse_json(source_text: Handle<StringValue>) -> EvalResult<Option<JSONVal
     Ok(Some(value))
 }
 
-fn parse_json_value(lexer: &mut StringLexer) -> Option<JSONValue> {
+fn parse_json_value(
+    lexer: &mut StringLexer,
+    depth: u32,
+    max_depth: u32,
+    depth_exceeded: &mut bool,
+) -> Option<JSONValue> {
+    // Stop before recursing into another container: 100k-deep input must not exhaust the Rust
+    // stack. The caller turns the flag into a catchable RangeError.
+    if depth > max_depth {
+        *depth_exceeded = true;
+        return None;
+    }
+
     let start_pos = lexer.pos();
     if lexer.eat('{') {
-        parse_json_object(lexer, start_pos)
+        parse_json_object(lexer, start_pos, depth, max_depth, depth_exceeded)
     } else if lexer.eat('[') {
-        parse_json_array(lexer, start_pos)
+        parse_json_array(lexer, start_pos, depth, max_depth, depth_exceeded)
     } else if lexer.eat('"') {
         let string_value = parse_json_string(lexer)?;
         let loc = lexer.mark_loc(start_pos);
@@ -107,7 +133,13 @@ fn skip_json_whitespace(lexer: &mut StringLexer) {
     }
 }
 
-fn parse_json_object(lexer: &mut StringLexer, start_pos: Pos) -> Option<JSONValue> {
+fn parse_json_object(
+    lexer: &mut StringLexer,
+    start_pos: Pos,
+    depth: u32,
+    max_depth: u32,
+    depth_exceeded: &mut bool,
+) -> Option<JSONValue> {
     let mut properties = vec![];
 
     // Consume leading whitespace before the next character (key or closing brace)
@@ -124,7 +156,7 @@ fn parse_json_object(lexer: &mut StringLexer, start_pos: Pos) -> Option<JSONValu
 
         // Parse the value
         skip_json_whitespace(lexer);
-        let value = parse_json_value(lexer)?;
+        let value = parse_json_value(lexer, depth + 1, max_depth, depth_exceeded)?;
 
         // Add the key value pair to the object
         properties.push((key_string, value));
@@ -152,7 +184,13 @@ fn parse_json_object(lexer: &mut StringLexer, start_pos: Pos) -> Option<JSONValu
     Some(JSONValue::Object { properties, loc })
 }
 
-fn parse_json_array(lexer: &mut StringLexer, start_pos: Pos) -> Option<JSONValue> {
+fn parse_json_array(
+    lexer: &mut StringLexer,
+    start_pos: Pos,
+    depth: u32,
+    max_depth: u32,
+    depth_exceeded: &mut bool,
+) -> Option<JSONValue> {
     let mut elements = vec![];
 
     // Consume leading whitespace before the next character (value or closing bracket)
@@ -160,7 +198,7 @@ fn parse_json_array(lexer: &mut StringLexer, start_pos: Pos) -> Option<JSONValue
 
     while !lexer.current_equals(']') && !lexer.is_end() {
         // Parse the array element
-        let element = parse_json_value(lexer)?;
+        let element = parse_json_value(lexer, depth + 1, max_depth, depth_exceeded)?;
         elements.push(element);
 
         // There may be whitespace after a value and before the comma/closing bracket

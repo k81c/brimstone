@@ -2622,6 +2622,10 @@ impl VM {
         // Re-entry from Rust is a safepoint: never start user JS after a stop request.
         self.safepoint(0)?;
 
+        // Bound nested native re-entry (M2 hardening). Exceeding the budget is a catchable
+        // RangeError, distinct from an uncatchable Terminated.
+        let _native_guard = crate::runtime::native_guard::NativeGuard::new(self.cx())?;
+
         // Check whether the value is callable, potentially deferring to proxy.
         let closure_ptr = match self.check_value_is_callable(*function)? {
             CallableObject::Closure(closure) => closure,

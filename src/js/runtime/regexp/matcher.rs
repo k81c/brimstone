@@ -55,6 +55,12 @@ pub struct MatchEngine<'a, T: RegExpLexerStream> {
     /// is always 0, for sub-executions this is the size of the backtrack stack at the sub-execution
     /// start.
     backtrack_stack_base: usize,
+    /// Cooperative control for the query (M2 hardening). Checked every 64k instructions so a
+    /// long-running regex obeys preview deadlines and user stop requests.
+    control: crate::runtime::execution_control::ExecutionControl,
+    /// Number of instructions executed so far and the per-match budget.
+    steps: u64,
+    max_steps: u64,
 }
 
 /// Shared buffers used by the match engine to avoid having to reallocate on every match.
@@ -165,6 +171,10 @@ const BACKWARD: bool = false;
 enum MatchError {
     NoMatch,
     StackOverflow,
+    /// The per-match RegExp instruction budget was exhausted (mapped to a catchable RangeError).
+    StepBudgetExceeded,
+    /// A cooperative stop / deadline was observed (mapped to uncatchable Terminated).
+    Stopped,
 }
 
 type MatchResult = Result<(), MatchError>;
@@ -174,6 +184,8 @@ impl<'a, T: RegExpLexerStream> MatchEngine<'a, T> {
         regexp: HeapPtr<CompiledRegExp>,
         string_lexer: T,
         buffers: &'a mut MatchEngineCache,
+        control: crate::runtime::execution_control::ExecutionControl,
+        max_steps: u64,
     ) -> Self {
         let num_capture_points = (regexp.num_capture_groups as usize + 1) * 2;
         let instructions_base = regexp.instructions_as_slice().as_ptr();
@@ -204,7 +216,25 @@ impl<'a, T: RegExpLexerStream> MatchEngine<'a, T> {
             buffers,
             backtrack_stack_base: 0,
             constants_base: regexp.constants_as_ptr(),
+            control,
+            steps: 0,
+            max_steps,
         }
+    }
+
+    /// Charge one instruction and periodically observe cooperative stop/deadline requests.
+    #[inline]
+    fn tick(&mut self) -> MatchResult {
+        self.steps += 1;
+        if self.steps > self.max_steps {
+            return Err(MatchError::StepBudgetExceeded);
+        }
+        // 64k instructions between safepoints keeps the check cost negligible while still
+        // letting a 2s preview stop a pathological regex promptly.
+        if self.steps & 0xFFFF == 0 && self.control.check(0).is_err() {
+            return Err(MatchError::Stopped);
+        }
+        Ok(())
     }
 
     #[inline]
@@ -642,6 +672,7 @@ impl<'a, T: RegExpLexerStream> MatchEngine<'a, T> {
 
     fn execute_bytecode<const DIRECTION: bool>(&mut self) -> MatchResult {
         loop {
+            self.tick()?;
             let instr = self.current_instruction();
             match instr.opcode() {
                 OpCode::Accept => return Ok(()),
@@ -891,8 +922,12 @@ impl<'a, T: RegExpLexerStream> MatchEngine<'a, T> {
                     let is_match = match match_result {
                         Ok(()) => true,
                         Err(MatchError::NoMatch) => false,
-                        Err(MatchError::StackOverflow) => {
-                            return Err(MatchError::StackOverflow);
+                        Err(
+                            err @ (MatchError::StackOverflow
+                            | MatchError::StepBudgetExceeded
+                            | MatchError::Stopped),
+                        ) => {
+                            return Err(err);
                         }
                     };
 
@@ -1201,8 +1236,10 @@ fn match_lexer_stream(
     lexer_stream.advance_n(start_index as usize);
 
     // Create match engine, borrowing cached buffers from the context
+    let control = cx.vm().control().clone();
+    let max_steps = cx.options.max_regex_steps;
     let buffers = &mut cx.regexp_match_engine_cache;
-    let mut match_engine = MatchEngine::new(regexp, lexer_stream, buffers);
+    let mut match_engine = MatchEngine::new(regexp, lexer_stream, buffers, control, max_steps);
 
     // Run the match engine on the input stream
     let result = match_engine.run(search);
@@ -1220,6 +1257,8 @@ pub fn run_matcher(
     start_index: u32,
     search: MatchSearch,
 ) -> EvalResult<Option<Match>> {
+    let _native_guard = crate::runtime::native_guard::NativeGuard::new(cx)?;
+
     // May allocate, after this point no more allocations can occur
     let flat_string = target_string.flatten()?;
 
@@ -1247,6 +1286,8 @@ pub fn run_matcher(
         Ok(matched_result) => Ok(Some(matched_result)),
         Err(MatchError::NoMatch) => Ok(None),
         Err(MatchError::StackOverflow) => range_error(cx, "Stack overflow while matching RegExp"),
+        Err(MatchError::StepBudgetExceeded) => range_error(cx, "RegExp step budget exceeded"),
+        Err(MatchError::Stopped) => Err(crate::runtime::eval_result::EvalError::Terminated),
     }
 }
 

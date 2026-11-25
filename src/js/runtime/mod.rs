@@ -37,6 +37,7 @@ pub mod intrinsic_builder;
 pub mod intrinsics;
 mod iterator;
 pub mod module;
+pub mod native_guard;
 mod numeric_operations;
 pub mod object_value;
 pub mod ordinary_object;

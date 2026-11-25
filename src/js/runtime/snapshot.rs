@@ -11,6 +11,9 @@ use crate::{
         BsResult, Context, Handle, HeapItemKind, HeapPtr, PropertyKey, Value,
         abstract_operations::create_data_property_or_throw,
         array_object::array_create,
+        error::BsError,
+        eval_result::EvalError,
+        gc::{Escapable, HandleScope},
         object_value::ObjectValue,
         ordinary_object::{
             ordinary_get_own_property, ordinary_object_create, ordinary_own_property_keys,
@@ -117,7 +120,12 @@ pub fn snapshot(
 ) -> BsResult<SnapshotValue> {
     handle_scope_guard!(cx);
 
-    let mut state = SnapshotState { limits, remaining_bytes: limits.max_bytes, seen: Vec::new() };
+    let mut state = SnapshotState {
+        limits,
+        remaining_bytes: limits.max_bytes,
+        seen: Vec::new(),
+        nodes: 0,
+    };
 
     snapshot_inner(cx, value, 0, &mut state)
 }
@@ -127,6 +135,8 @@ struct SnapshotState {
     remaining_bytes: usize,
     /// Object identities currently on the recursion path.
     seen: Vec<HeapPtr<ObjectValue>>,
+    /// Number of visited nodes, used for cooperative stop/deadline checks.
+    nodes: u64,
 }
 
 fn charge(state: &mut SnapshotState, bytes: usize) -> bool {
@@ -139,11 +149,18 @@ fn charge(state: &mut SnapshotState, bytes: usize) -> bool {
 }
 
 fn snapshot_inner(
-    cx: Context,
+    mut cx: Context,
     value: Handle<Value>,
     depth: usize,
     state: &mut SnapshotState,
 ) -> BsResult<SnapshotValue> {
+    // F8: a huge result must be interruptible during conversion. Check stop/deadlines every 1024
+    // visited nodes; an uncatchable Terminated propagates back to the worker.
+    state.nodes += 1;
+    if state.nodes.is_multiple_of(1024) && cx.vm().control().check(0).is_err() {
+        return Err(BsError::Eval(EvalError::Terminated));
+    }
+
     if depth > state.limits.max_depth || !charge(state, 8) {
         return Ok(SnapshotValue::Truncated);
     }
@@ -288,10 +305,34 @@ fn wtf8_to_string(wtf8: Wtf8String) -> String {
 }
 
 /// Build a JS value from a plain snapshot. Used to feed input documents into `__main__`.
+///
+/// The returned handle must escape into the caller's handle scope: a `handle_scope_guard!` would
+/// pop this scope on return, leaving the handle pointing at a slot that the next allocation in
+/// `call_main` reuses. That was the M1-F1 bug where a top-level string document arrived at
+/// `__main__` as the `__main__` function itself.
 pub fn build(cx: Context, value: &SnapshotValue) -> BsResult<Handle<Value>> {
-    handle_scope_guard!(cx);
+    let scope = HandleScope::enter(cx);
+    let result = build_inner(cx, value, 0);
 
-    build_inner(cx, value, 0)
+    // Copy out any handle-bearing error before the scope is popped, then re-escape it into the
+    // caller's scope (Escapable::escape must be called after the child scope is destroyed).
+    let eval_error = match &result {
+        Err(BsError::Eval(err)) => Some(*err),
+        _ => None,
+    };
+
+    let built = match result {
+        Ok(built) => built,
+        Err(err) => {
+            scope.exit();
+            return Err(match eval_error {
+                Some(err) => BsError::Eval(err.escape(cx)),
+                None => err,
+            });
+        }
+    };
+
+    Ok(scope.escape(cx, built))
 }
 
 fn build_inner(mut cx: Context, value: &SnapshotValue, depth: usize) -> BsResult<Handle<Value>> {

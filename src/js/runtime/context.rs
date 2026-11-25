@@ -149,7 +149,18 @@ pub struct ContextCell {
     /// Global `__main__` captured by the embed API, if any. Kept as a GC root so it can be called
     /// repeatedly without re-running the wrapper script.
     pub embed_main: Option<Value>,
+
+    /// Current number of active native operations (parser / JSON / RegExp / call_from_rust).
+    /// Thread-local by construction: a Context never leaves its worker thread.
+    pub native_depth: std::cell::Cell<u32>,
+
+    /// Dynamically installed host functions, dispatched by the `__host_call__` intrinsic (M2 F7).
+    pub host_functions: Vec<(String, HostFunction)>,
 }
+
+/// A callback installed by the embedder. It receives the live `Context` and the raw arguments and
+/// returns a JS value. Callbacks must not retain `Handle`s past the call.
+pub type HostFunction = Box<dyn FnMut(Context, &[Handle<Value>]) -> EvalResult<Handle<Value>>>;
 
 impl Context {
     fn new(options: Rc<Options>) -> AllocResult<Context> {
@@ -188,6 +199,8 @@ impl Context {
             mocked_unix_time_nanos: None,
             temporal_provider: CompiledTzdbProvider::default(),
             embed_main: None,
+            native_depth: std::cell::Cell::new(0),
+            host_functions: Vec::new(),
         });
 
         let mut cx = Context::from_ptr(NonNull::from(Box::leak(cx_cell)));
@@ -286,6 +299,8 @@ impl Context {
     }
 
     pub fn evaluate_script(&mut self, source: Rc<Source>) -> BsResult<()> {
+        let _native_guard = crate::runtime::native_guard::NativeGuard::new(*self)?;
+
         // Parse script and perform semantic analysis
         let pcx = ParseContext::new(source);
         let parse_result = parse_script(&pcx, self.options.clone())?;
@@ -385,6 +400,69 @@ impl Context {
             let receiver = self.undefined();
             self.vm().call_from_rust(main, receiver, &[argument])
         })
+    }
+
+    /// Install a named host function callable from JS through `__host_call__(name, ...args)`.
+    pub fn install_host_function(&mut self, name: &str, callback: HostFunction) {
+        self.host_functions.push((name.to_owned(), callback));
+    }
+
+    /// Invoke a dynamically installed host function by name. Unknown names throw a catchable
+    /// `ReferenceError`.
+    pub fn call_host_function(
+        &mut self,
+        name: &str,
+        args: &[Handle<Value>],
+    ) -> EvalResult<Handle<Value>> {
+        let cx = *self;
+        for (registered_name, callback) in self.host_functions.iter_mut() {
+            if registered_name == name {
+                return callback(cx, args);
+            }
+        }
+        let error = crate::runtime::error::reference_error_value(
+            cx,
+            &format!("host function '{name}' is not registered"),
+        )?;
+        crate::eval_err!(error)
+    }
+
+    /// Return the Brimstone-formatted stack trace of an error value as a newline-separated string.
+    ///
+    /// Uses the same frame rendering path as `console.error`, capped by `max_backtrace_frames`.
+    /// No user JS is called: only the cached `ErrorObject` stack frames are read (M2 F5).
+    pub fn error_stack_string(&mut self, handle: Handle<Value>) -> BsResult<String> {
+        handle_scope_guard!(*self);
+
+        let Some(mut error) =
+            handle.as_opt::<crate::runtime::intrinsics::error_object::ErrorObject>()
+        else {
+            return Ok(String::new());
+        };
+
+        let stack_trace = error.get_stack_trace(*self)?;
+        let wtf8 = stack_trace.frames.to_wtf8_string();
+        Ok(String::from_utf8_lossy(wtf8.as_bytes()).into_owned())
+    }
+
+    /// Drain the embedded console buffer into lines, clearing it. Returns an empty vector when the
+    /// host has not installed a buffer (e.g. the upstream CLI, which still prints to stdout).
+    pub fn drain_console(&mut self) -> Vec<String> {
+        let buffer = match self.options.console_buffer.as_ref() {
+            Some(buffer) => buffer,
+            None => return Vec::new(),
+        };
+        let mut buffer = buffer.lock().unwrap();
+        let text = String::from_utf8_lossy(&buffer.bytes).into_owned();
+        let truncated = buffer.truncated;
+        buffer.bytes.clear();
+        buffer.truncated = 0;
+
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        if truncated > 0 {
+            lines.push(format!("… (truncated {truncated} bytes)"));
+        }
+        lines
     }
 
     /// Execute a module, loading and executing all dependencies. Run until the task queue is empty.
