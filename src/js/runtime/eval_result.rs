@@ -12,6 +12,11 @@ pub enum EvalError {
     /// An allocation error.
     #[cfg(feature = "alloc_error")]
     Alloc(AllocError),
+    /// Cooperative stop requested from the host (M0 embed API).
+    ///
+    /// This is deliberately not a JS value: it cannot be caught by `catch`, and `finally` and
+    /// iterator close are skipped. It must be propagated unchanged through every Rust layer.
+    Terminated,
 }
 
 impl EvalError {
@@ -43,6 +48,7 @@ impl Escapable for EvalError {
             Self::Value(value) => Self::Value(value.escape(cx)),
             #[cfg(feature = "alloc_error")]
             Self::Alloc(err) => Self::Alloc(err.escape(cx)),
+            Self::Terminated => Self::Terminated,
         }
     }
 }
@@ -66,6 +72,17 @@ macro_rules! must {
             #[cfg(feature = "alloc_error")]
             Err(EvalError::Alloc(alloc_err)) => {
                 return Err(alloc_err.into());
+            }
+            // A cooperative stop must never be swallowed by an assertion.
+            Err(EvalError::Terminated) => {
+                #[cfg(feature = "alloc_error")]
+                {
+                    return Err($crate::runtime::alloc_error::AllocError::terminated().into());
+                }
+                #[cfg(not(feature = "alloc_error"))]
+                {
+                    panic!("EvalError::Terminated reached must! without alloc_error feature")
+                }
             }
             // A thrown value. Propagate upwards only if it is a stack overflow, otherwise fail
             // the assertion.
@@ -96,7 +113,18 @@ macro_rules! must_a {
             Err(EvalError::Alloc(alloc_err)) => {
                 return Err(alloc_err.into());
             }
-            // Fail assertion on any thrown value including stack overflows
+            // Fail assertion on any thrown value including stack overflows, but never swallow a
+            // cooperative stop.
+            Err(EvalError::Terminated) => {
+                #[cfg(feature = "alloc_error")]
+                {
+                    return Err($crate::runtime::alloc_error::AllocError::terminated().into());
+                }
+                #[cfg(not(feature = "alloc_error"))]
+                {
+                    panic!("EvalError::Terminated reached must_a! without alloc_error feature")
+                }
+            }
             Err(EvalError::Value(_)) => {
                 panic!("Unexpected abnormal completion")
             }
@@ -120,6 +148,16 @@ macro_rules! completion_value {
             Err($crate::runtime::eval_result::EvalError::Value(value)) => Err(value),
             #[cfg(feature = "alloc_error")]
             Err($crate::runtime::eval_result::EvalError::Alloc(err)) => return Err(err.into()),
+            Err($crate::runtime::eval_result::EvalError::Terminated) => {
+                #[cfg(feature = "alloc_error")]
+                {
+                    return Err($crate::runtime::alloc_error::AllocError::terminated().into());
+                }
+                #[cfg(not(feature = "alloc_error"))]
+                {
+                    panic!("EvalError::Terminated reached completion_value! without alloc_error")
+                }
+            }
         }
     };
 }

@@ -50,7 +50,13 @@ fn gather_current_stack_frames(mut cx: Context, skip_current_frame: bool) -> Vec
 
     let stack_trace_top = cx.vm().stack_trace_top();
 
+    let max_frames = cx.options.stack.max_backtrace_frames as usize;
+
     while let Some(stack_frame) = stack_frame_opt {
+        if frames.len() >= max_frames {
+            break;
+        }
+
         // Stop if we've reached the first stack frame that should not be included in the trace
         if Some(stack_frame) == stack_trace_top {
             break;

@@ -13,6 +13,11 @@ pub enum AllocError {
     Oom(()),
     #[cfg(not(feature = "alloc_error"))]
     Oom(!),
+    /// A cooperative stop observed inside a function returning `AllocResult`.
+    ///
+    /// This exists so `must!` / `must_a!` can propagate `EvalError::Terminated` without
+    /// panicking or converting it into a JavaScript error.
+    Terminated(()),
 }
 
 impl AllocError {
@@ -20,11 +25,23 @@ impl AllocError {
     pub fn oom() -> Self {
         AllocError::Oom(())
     }
+
+    pub fn terminated() -> Self {
+        AllocError::Terminated(())
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        matches!(self, AllocError::Terminated(_))
+    }
 }
 
 // Automatically convert AllocResult to an EvalResult
 impl From<AllocError> for EvalError {
     fn from(_err: AllocError) -> Self {
+        if _err.is_terminated() {
+            return EvalError::Terminated;
+        }
+
         #[cfg(feature = "alloc_error")]
         {
             EvalError::Alloc(_err)
@@ -61,6 +78,7 @@ impl AllocError {
     pub fn format(&self, opts: &FormatOptions) -> String {
         match self {
             Self::Oom(_) => format_oom_error_message(opts),
+            Self::Terminated(_) => "Terminated".to_string(),
         }
     }
 }
@@ -69,6 +87,7 @@ impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Oom(_) => write!(f, "Ran out of heap memory"),
+            Self::Terminated(_) => write!(f, "Terminated"),
         }
     }
 }

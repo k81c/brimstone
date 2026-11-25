@@ -119,6 +119,9 @@ impl Context {
     /// Run all tasks until the task queue is empty.
     pub fn run_all_tasks(&mut self) -> EvalResult<()> {
         while let Some(task) = self.task_queue().tasks.pop_front() {
+            // Job boundary is a safepoint: a stopped query must not run another job.
+            self.vm().control().check(0)?;
+
             handle_scope!(*self, {
                 match task {
                     Task::Callback1(task) => task.execute(*self),

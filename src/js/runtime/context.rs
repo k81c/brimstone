@@ -19,12 +19,12 @@ use crate::{
         time::{get_current_unix_time_millis, get_current_unix_time_nanos},
         wtf_8::{Wtf8Str, Wtf8String},
     },
-    eval_err, handle_scope, impl_hash_map_instance, must_a,
+    eval_err, handle_scope, handle_scope_guard, impl_hash_map_instance, must_a,
     parser::{
         ParseContext, analyze::analyze, parse_module, parse_script, print_program, source::Source,
     },
     runtime::{
-        EvalResult, Handle, HeapPtr, SymbolValue, Value,
+        EvalResult, Handle, HeapPtr, PropertyKey, SymbolValue, Value,
         alloc_error::AllocResult,
         array_properties::{ArrayProperties, DenseArrayProperties},
         builtin_names::{BuiltinNames, BuiltinSymbols},
@@ -39,6 +39,7 @@ use crate::{
         common_shapes::CommonShape,
         error::BsResult,
         gc::{GarbageCollector, Heap, HeapItem, HeapRootsDeserializer, HeapVisitor},
+        get,
         interned_strings::InternedStrings,
         intrinsics::{intrinsics::Intrinsic, rust_runtime::RustRuntimeFunctionRegistry},
         module::{
@@ -144,6 +145,10 @@ pub struct ContextCell {
 
     /// Time zone provider used for Temporal operations.
     temporal_provider: CompiledTzdbProvider,
+
+    /// Global `__main__` captured by the embed API, if any. Kept as a GC root so it can be called
+    /// repeatedly without re-running the wrapper script.
+    pub embed_main: Option<Value>,
 }
 
 impl Context {
@@ -182,6 +187,7 @@ impl Context {
             regexp_match_engine_cache: MatchEngineCache::default(),
             mocked_unix_time_nanos: None,
             temporal_provider: CompiledTzdbProvider::default(),
+            embed_main: None,
         });
 
         let mut cx = Context::from_ptr(NonNull::from(Box::leak(cx_cell)));
@@ -344,6 +350,41 @@ impl Context {
         self.run_all_tasks()?;
 
         Ok(())
+    }
+
+    /// Capture the global `__main__` function created by a previously executed wrapper script.
+    ///
+    /// The function is stored as a GC root so that it can be called once per document using
+    /// `call_main`, without re-running stdlib / prelude / wrapper.
+    pub fn capture_main(&mut self) -> BsResult<()> {
+        handle_scope_guard!(*self);
+
+        let global = self.initial_realm().global_object().as_object();
+        let key = PropertyKey::string_handle(*self, self.alloc_static_string("__main__")?)?;
+        let value = get(*self, global, key)?;
+
+        if !crate::runtime::type_utilities::is_callable(value) {
+            crate::runtime::error::type_error_value(*self, "__main__ is not callable")?;
+        }
+
+        self.embed_main = Some(*value);
+        Ok(())
+    }
+
+    /// Call the captured `__main__` once. This is the per-document entry point of the embed API.
+    pub fn call_main(&mut self, argument: Handle<Value>) -> EvalResult<Handle<Value>> {
+        let main = match self.embed_main {
+            Some(value) => value.to_handle(*self),
+            None => {
+                crate::runtime::error::type_error_value(*self, "__main__ was not captured")?;
+                unreachable!()
+            }
+        };
+
+        handle_scope!(*self, {
+            let receiver = self.undefined();
+            self.vm().call_from_rust(main, receiver, &[argument])
+        })
     }
 
     /// Execute a module, loading and executing all dependencies. Run until the task queue is empty.
@@ -665,6 +706,10 @@ impl Context {
 
         if let Some(vm) = &mut self.vm {
             vm.visit_roots(visitor);
+        }
+
+        if let Some(main) = &mut self.embed_main {
+            visitor.visit_value(main);
         }
     }
 

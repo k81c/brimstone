@@ -59,6 +59,7 @@ impl From<EvalError> for BsError {
             EvalError::Value(_) => BsError::Eval(error),
             #[cfg(feature = "alloc_error")]
             EvalError::Alloc(err) => BsError::Alloc(err),
+            EvalError::Terminated => BsError::Eval(error),
         }
     }
 }
@@ -77,9 +78,11 @@ impl BsError {
             BsError::Emit(error) => error.format(opts),
             BsError::Eval(EvalError::Value(error)) => format_eval_error_value(cx, *error, opts)
                 .unwrap_or_else(|_| format_oom_error_message(opts)),
+            BsError::Alloc(AllocError::Terminated(_)) => "Terminated".to_string(),
             BsError::Alloc(error) => error.format(opts),
             #[cfg(feature = "alloc_error")]
             BsError::Eval(EvalError::Alloc(error)) => error.format(opts),
+            BsError::Eval(EvalError::Terminated) => "Terminated".to_string(),
         }
     }
 }

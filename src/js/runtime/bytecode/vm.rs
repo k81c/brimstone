@@ -115,6 +115,7 @@ use crate::{
             },
         },
         eval_result::EvalError,
+        execution_control::{DEFAULT_SAFEPOINT_INTERVAL, ExecutionControl},
         for_in_iterator::ForInIterator,
         function::build_function_name,
         gc::{AnyHeapItem, HeapItemKind, HeapVisitor},
@@ -181,6 +182,12 @@ pub struct VM {
     /// The number of nested dispatch loops currently executing. Each is a re-entry into the VM
     /// from the Rust runtime.
     nested_dispatch_depth: usize,
+
+    /// Shared stop / deadline / budget state (M0 embed API).
+    control: ExecutionControl,
+
+    /// Instructions dispatched since the last safepoint.
+    instructions_since_safepoint: u64,
 }
 
 /// Max number of nested dispatch loops to avoid overflowing the native stack. Rough limit set from
@@ -188,14 +195,14 @@ pub struct VM {
 ///
 /// Release builds can have much deeper stacks.
 #[cfg(not(debug_assertions))]
-const MAX_DISPATCH_DEPTH: usize = 2048;
+pub(crate) const MAX_DISPATCH_DEPTH: usize = 2048;
 
 /// Max number of nested dispatch loops to avoid overflowing the native stack. Rough limit set from
 /// observed values and subject to change.
 ///
 /// Debug builds only support shallow stacks before overflowing native stack.
 #[cfg(debug_assertions)]
-const MAX_DISPATCH_DEPTH: usize = 32;
+pub(crate) const MAX_DISPATCH_DEPTH: usize = 32;
 
 /// A unary operation instruction handler which calls a single Rust function with the signature
 /// (Context, Handle<Value>) -> EvalResult<Handle<Value>>.
@@ -555,10 +562,12 @@ impl VM {
 
 impl VM {
     pub fn new(cx: Context) -> Self {
-        // Allocate uninitialized memory for stack
+        // Allocate the VM stack at runtime from Options::stack (M0 embed API). The default
+        // configuration matches the previous fixed 4 MiB / NUM_STACK_SLOTS allocation.
+        let max_slots = cx.options.stack.max_slots.max(NUM_STACK_SLOTS.min(1024));
         let stack = unsafe {
-            let mut stack = Vec::<MaybeUninit<StackSlotValue>>::with_capacity(NUM_STACK_SLOTS);
-            stack.set_len(NUM_STACK_SLOTS);
+            let mut stack = Vec::<MaybeUninit<StackSlotValue>>::with_capacity(max_slots);
+            stack.set_len(max_slots);
             transmute::<Vec<MaybeUninit<StackSlotValue>>, Vec<StackSlotValue>>(stack)
         };
 
@@ -570,12 +579,38 @@ impl VM {
             stack_trace_top: None,
             thrown_non_error_info: None,
             nested_dispatch_depth: 0,
+            control: ExecutionControl::default(),
+            instructions_since_safepoint: 0,
 
             stack,
         };
 
         vm.reset_stack();
         vm
+    }
+
+    /// Replace the shared execution control used by all safepoints in this VM.
+    pub fn set_control(&mut self, control: ExecutionControl) {
+        self.control = control;
+    }
+
+    pub fn control(&self) -> &ExecutionControl {
+        &self.control
+    }
+
+    #[inline]
+    fn stack_reserve_slots(&self) -> usize {
+        self.cx
+            .options
+            .stack
+            .reserve_slots
+            .min(self.stack.len().saturating_sub(1024))
+    }
+
+    /// Check stop requests, deadlines, and dispatch budget. Called from safepoints only.
+    #[inline]
+    fn safepoint(&self, steps: u64) -> EvalResult<()> {
+        self.control.check(steps)
     }
 
     /// Execute an entire bytecode script, first instantiating the global declarations then
@@ -679,6 +714,9 @@ impl VM {
         completion_value: Handle<Value>,
         completion_type: GeneratorCompletionType,
     ) -> EvalResult<Handle<Value>> {
+        // Re-entry via generator resume is a safepoint.
+        self.safepoint(0)?;
+
         let saved_stack_frame = generator.stack_frame();
         let stack_frame_size = saved_stack_frame.len();
 
@@ -752,12 +790,16 @@ impl VM {
     fn dispatch_loop(&mut self) -> EvalResult<()> {
         // Check that a nested dispatch loop can be entered without potentially overflowing the
         // native stack.
-        if self.nested_dispatch_depth >= MAX_DISPATCH_DEPTH {
+        let max_dispatch_depth = self.cx.options.stack.max_dispatch_depth as usize;
+        if self.nested_dispatch_depth >= max_dispatch_depth {
             // Clean up stack frame that the caller pushed before dispatching
             let return_address = self.pop_stack_frame();
             self.publish_pc(return_address);
             return stack_overflow_error(self.cx());
         }
+
+        // Function entry is a safepoint. Check before any JS instruction runs.
+        self.safepoint(0)?;
 
         self.nested_dispatch_depth += 1;
         let result = handle_scope!(self.cx(), self.dispatch_loop_inner());
@@ -785,6 +827,14 @@ impl VM {
         let mut local_pc = self.published_pc();
 
         'dispatch: loop {
+            // Safepoint. A stop request, an expired deadline, or an exhausted dispatch budget
+            // must abort before the next JS instruction runs, without entering JS catch/finally.
+            self.instructions_since_safepoint += 1;
+            if self.instructions_since_safepoint >= DEFAULT_SAFEPOINT_INTERVAL {
+                self.instructions_since_safepoint = 0;
+                self.safepoint(DEFAULT_SAFEPOINT_INTERVAL)?;
+            }
+
             // Set the local PC without publishing it. Only valid when nothing between here and the
             // next publish can allocate, throw, or cross a runtime boundary.
             macro_rules! set_local_pc {
@@ -1034,6 +1084,8 @@ impl VM {
                         // Always propagate allocation errors upwards
                         #[cfg(feature = "alloc_error")]
                         Err(EvalError::Alloc(err)) => return Err(err.into()),
+                        // Termination is uncatchable: skip JS throw/catch, finally and iterator close.
+                        Err(EvalError::Terminated) => return Err(EvalError::Terminated),
                     }
                 };
             }
@@ -2567,6 +2619,9 @@ impl VM {
         receiver: Handle<Value>,
         arguments: &[Handle<Value>],
     ) -> EvalResult<Handle<Value>> {
+        // Re-entry from Rust is a safepoint: never start user JS after a stop request.
+        self.safepoint(0)?;
+
         // Check whether the value is callable, potentially deferring to proxy.
         let closure_ptr = match self.check_value_is_callable(*function)? {
             CallableObject::Closure(closure) => closure,
@@ -2634,6 +2689,9 @@ impl VM {
         arguments: &[Handle<Value>],
         new_target: Handle<ObjectValue>,
     ) -> EvalResult<Handle<ObjectValue>> {
+        // Re-entry from Rust is a safepoint.
+        self.safepoint(0)?;
+
         handle_scope!(self.cx(), {
             // Check whether the value is a constructor, potentially deferring to proxy.
             let closure_handle = match self.check_value_is_constructor(*function)? {
@@ -3074,7 +3132,9 @@ impl VM {
     /// called before decrementing the stack pointer to  allocate a new stack frame.
     #[inline(always)]
     fn stack_depth_check(&self, new_frame_num_slots: usize) -> EvalResult<()> {
-        if self.sp().wrapping_sub(new_frame_num_slots).cast_const() < self.stack_ptr_start() {
+        // Keep `reserve_slots` free so a RangeError can still be created after an overflow.
+        let lowest_allowed = unsafe { self.stack_ptr_start().add(self.stack_reserve_slots()) };
+        if self.sp().wrapping_sub(new_frame_num_slots).cast_const() < lowest_allowed {
             return self.throw_stack_overflow();
         }
 

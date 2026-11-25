@@ -86,6 +86,36 @@ pub struct Args {
     pub script_args: Vec<String>,
 }
 
+/// Stack and depth limits for one execution (M0 embed API).
+///
+/// `max_slots` is the total number of VM stack slots allocated when the context is created;
+/// `reserve_slots` is kept free so that a `RangeError` can still be constructed on overflow.
+#[derive(Clone, Debug)]
+pub struct StackConfig {
+    /// Total VM stack slots (524,288 slots = 4 MiB on 64-bit).
+    pub max_slots: usize,
+    /// Slots reserved for error generation.
+    pub reserve_slots: usize,
+    /// Maximum nested dispatches (Rust -> VM re-entry).
+    pub max_dispatch_depth: u32,
+    /// Maximum nested native calls (parser / JSON / RegExp / call_from_rust).
+    pub max_native_depth: u32,
+    /// Maximum number of frames captured in a stack trace.
+    pub max_backtrace_frames: u16,
+}
+
+impl Default for StackConfig {
+    fn default() -> Self {
+        Self {
+            max_slots: 524_288,
+            reserve_slots: 8_192,
+            max_dispatch_depth: crate::runtime::bytecode::vm::MAX_DISPATCH_DEPTH as u32,
+            max_native_depth: 256,
+            max_backtrace_frames: 50,
+        }
+    }
+}
+
 /// Options passed throughout the program.
 pub struct Options {
     /// Whether Annex B extensions are enabled
@@ -114,6 +144,9 @@ pub struct Options {
 
     /// The maximum heap size in bytes
     pub max_heap_size: usize,
+
+    /// Stack and depth limits for this context (M0 embed API)
+    pub stack: StackConfig,
 
     /// Whether to use colors when printing to the terminal
     pub no_color: bool,
@@ -172,6 +205,7 @@ impl OptionsBuilder {
             dump_buffer: None,
             min_heap_size: DEFAULT_MIN_HEAP_SIZE,
             max_heap_size: DEFAULT_MAX_HEAP_SIZE,
+            stack: StackConfig::default(),
             no_color: false,
             parse_stats: false,
             expose_gc: false,
@@ -226,6 +260,23 @@ impl OptionsBuilder {
             )));
         }
 
+        let stack = &self.0.stack;
+        if stack.max_slots <= stack.reserve_slots + 1024 {
+            return Err(OptionCreationError::new(
+                "Stack max_slots must leave at least 1024 slots beyond reserve_slots".to_string(),
+            ));
+        }
+        if stack.max_dispatch_depth == 0 || stack.max_native_depth == 0 {
+            return Err(OptionCreationError::new(
+                "Stack depth limits must be non-zero".to_string(),
+            ));
+        }
+        if stack.max_backtrace_frames == 0 {
+            return Err(OptionCreationError::new(
+                "max_backtrace_frames must be non-zero".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -267,6 +318,20 @@ impl OptionsBuilder {
     pub fn max_heap_size(mut self, max_heap_size: usize) -> Self {
         self.0.max_heap_size = max_heap_size;
         self
+    }
+
+    /// Set the VM stack and depth limits.
+    pub fn stack_config(mut self, stack: StackConfig) -> Self {
+        self.0.stack = stack;
+        self
+    }
+
+    /// Recommended defaults for short-lived embedded queries: 8 MiB / 128 MiB heap and the
+    /// standard `StackConfig`. The upstream CLI defaults are left unchanged.
+    pub fn for_embedding(self) -> Self {
+        self.min_heap_size(8 * MEGABYTE_BYTES)
+            .max_heap_size(128 * MEGABYTE_BYTES)
+            .stack_config(StackConfig::default())
     }
 
     pub fn dump_buffer(mut self, dump_buffer: Option<Mutex<String>>) -> Self {
