@@ -248,6 +248,53 @@ fn host_function_is_callable() {
     cx.drop();
 }
 
+/// The console buffer never grows past its cap, even when many lines are written after it fills.
+#[test]
+fn console_buffer_cap_is_enforced() {
+    let mut buffer = brimstone_core::common::options::ConsoleBuffer::new(8);
+    for _ in 0..100 {
+        buffer.write_line("abcdefghijklmnop");
+    }
+    assert!(buffer.bytes.len() <= 8, "bytes = {}", buffer.bytes.len());
+    assert!(buffer.truncated > 0);
+}
+
+/// A host function that installs another host function must not invalidate the registry.
+#[test]
+fn host_function_may_install_another() {
+    let options = OptionsBuilder::new().for_embedding().build().unwrap();
+    let mut cx = ContextBuilder::new()
+        .set_options(Rc::new(options))
+        .build()
+        .unwrap();
+
+    cx.install_host_function(
+        "installer",
+        Box::new(|mut cx: Context, _: &[_]| {
+            cx.install_host_function("late", Box::new(|cx: Context, _: &[_]| Ok(cx.undefined())));
+            Ok(cx.undefined())
+        }),
+    );
+
+    let script = "function __main__(input) { __host_call__('installer'); return typeof __host_call__('late'); }";
+    let source =
+        Source::new_for_string("<host-fn-reentrant>", Wtf8String::from_str(script)).unwrap();
+    cx.evaluate_script(Rc::new(source))
+        .unwrap_or_else(|_| panic!("evaluate"));
+    cx.capture_main().unwrap_or_else(|_| panic!("capture main"));
+
+    let value = cx
+        .with_initial_realm_stack_frame(cx.initial_realm_ptr(), |mut cx| {
+            let argument = cx.undefined();
+            cx.call_main(argument)
+        })
+        .unwrap_or_else(|_| panic!("call main"));
+    let result = snapshot::snapshot(cx, value, SnapshotLimits::default())
+        .unwrap_or_else(|_| panic!("snapshot"));
+    assert_eq!(result, SnapshotValue::String("undefined".into()));
+    cx.drop();
+}
+
 /// B17: result conversion observes cooperative stop requests every 1024 nodes.
 #[test]
 fn snapshot_conversion_honors_stop() {

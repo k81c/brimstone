@@ -415,16 +415,26 @@ impl Context {
         args: &[Handle<Value>],
     ) -> EvalResult<Handle<Value>> {
         let cx = *self;
-        for (registered_name, callback) in self.host_functions.iter_mut() {
-            if registered_name == name {
-                return callback(cx, args);
-            }
-        }
-        let error = crate::runtime::error::reference_error_value(
-            cx,
-            &format!("host function '{name}' is not registered"),
-        )?;
-        crate::eval_err!(error)
+        // Remove the callback before invoking it. Holding an `iter_mut()` borrow across the call
+        // would let a re-entrant `install_host_function` reallocate the Vec and invalidate it.
+        let Some(index) = self
+            .host_functions
+            .iter()
+            .position(|(registered_name, _)| registered_name == name)
+        else {
+            let error = crate::runtime::error::reference_error_value(
+                cx,
+                &format!("host function '{name}' is not registered"),
+            )?;
+            return crate::eval_err!(error);
+        };
+
+        let mut callback = self.host_functions.remove(index);
+        let result = callback.1(cx, args);
+        // A callback that installs functions appends at the end; reinserting at the original
+        // index keeps every other registration intact.
+        self.host_functions.insert(index, callback);
+        result
     }
 
     /// Return the Brimstone-formatted stack trace of an error value as a newline-separated string.

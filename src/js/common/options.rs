@@ -108,14 +108,21 @@ impl ConsoleBuffer {
     /// Append one formatted line, counting any overflow toward `truncated`.
     pub fn write_line(&mut self, line: &str) {
         let remaining = self.cap.saturating_sub(self.bytes.len());
+        // Once the cap is reached, stop writing entirely. Appending a newline per line would let
+        // `bytes` grow without bound and make `drain_console` allocate a String per overflow line.
+        if remaining == 0 {
+            self.truncated = self.truncated.saturating_add(line.len().saturating_add(1));
+            return;
+        }
+
         // One byte is reserved for the newline.
-        let available = remaining.saturating_sub(1);
+        let available = remaining - 1;
         let take = line.len().min(available);
         self.bytes.extend_from_slice(&line.as_bytes()[..take]);
         self.bytes.push(b'\n');
         let skipped = line.len() - take;
         if skipped > 0 {
-            self.truncated += skipped;
+            self.truncated = self.truncated.saturating_add(skipped);
         }
     }
 }
