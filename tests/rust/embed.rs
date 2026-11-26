@@ -15,10 +15,12 @@ use brimstone_core::{
         wtf_8::Wtf8String,
     },
     parser::source::Source,
+    handle_scope_guard,
     runtime::{
         Context, ContextBuilder,
         error::BsError,
         eval_result::EvalError,
+        gc::{GcType, Heap},
         snapshot::{self, SnapshotLimits, SnapshotValue},
     },
 };
@@ -321,6 +323,46 @@ fn snapshot_conversion_honors_stop() {
     cx.vm().control().stop(0);
     let result = snapshot::snapshot(cx, value, SnapshotLimits::default());
     assert!(matches!(result, Err(BsError::Eval(EvalError::Terminated))));
+    cx.drop();
+}
+
+/// M4 F1 regression: a long single-Context run must survive repeated calls and
+/// heap-growth GCs. The host's `call_document` shape is mirrored: two initial
+/// realm frames per document, with the rooted realm pointer re-read between
+/// them (a pointer captured before a growing GC becomes stale).
+#[test]
+fn initial_realm_frame_survives_gc() {
+    let options = OptionsBuilder::new().for_embedding().build().unwrap();
+    let mut cx = ContextBuilder::new()
+        .set_options(Rc::new(options))
+        .build()
+        .unwrap();
+    let script = "function __main__(input) { return input.a + 1; }";
+    let source = Source::new_for_string("<m4-realm>", Wtf8String::from_str(script)).unwrap();
+    cx.evaluate_script(Rc::new(source))
+        .unwrap_or_else(|_| panic!("evaluate"));
+    cx.capture_main().unwrap_or_else(|_| panic!("capture main"));
+
+    let limits = SnapshotLimits::default();
+    for i in 0..50_000u64 {
+        if i % 1000 == 0 {
+            Heap::run_gc(cx, GcType::Normal);
+        }
+        let document = SnapshotValue::Object(vec![("a".to_string(), SnapshotValue::Number(i as f64))]);
+        handle_scope_guard!(cx);
+        let called = cx.with_initial_realm_stack_frame(cx.initial_realm_ptr(), |mut cx| {
+            let argument = snapshot::build(cx, &document).unwrap_or_else(|_| panic!("build"));
+            cx.call_main(argument)
+        });
+        let value = called.unwrap_or_else(|_| panic!("call main at {i}"));
+        let result = cx
+            .with_initial_realm_stack_frame(cx.initial_realm_ptr(), |cx| {
+                Ok(snapshot::snapshot(cx, value, limits.clone())
+                    .unwrap_or_else(|_| panic!("snapshot at {i}")))
+            })
+            .unwrap_or_else(|_| panic!("realm frame at {i}"));
+        assert_eq!(result, SnapshotValue::Number(i as f64 + 1.0), "call {i}");
+    }
     cx.drop();
 }
 
