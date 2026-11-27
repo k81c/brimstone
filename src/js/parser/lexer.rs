@@ -722,10 +722,10 @@ impl<'a> Lexer<'a> {
         let mut has_numeric_separator = false;
 
         let has_leading_zero = self.current == '0' as u32;
-        let allow_numeric_separator = !has_leading_zero;
 
-        // Read optional digits before the decimal point
-        has_numeric_separator |= self.skip_decimal_digits(allow_numeric_separator)?;
+        // The restriction on numeric separators after a leading zero only applies to the integer
+        // part. Separators are always allowed in the fraction and exponent digit runs.
+        has_numeric_separator |= self.skip_decimal_digits(!has_leading_zero)?;
 
         // This is a bigint literal
         if self.current == 'n' as u32 {
@@ -744,7 +744,7 @@ impl<'a> Lexer<'a> {
         // Read optional decimal point with its optional following digits
         if self.current == '.' as u32 {
             self.advance();
-            has_numeric_separator |= self.skip_decimal_digits(allow_numeric_separator)?;
+            has_numeric_separator |= self.skip_decimal_digits(true)?;
         }
 
         // Read optional exponent
@@ -761,7 +761,7 @@ impl<'a> Lexer<'a> {
                 return self.error(loc, ParseError::MalformedNumericLiteral);
             }
 
-            has_numeric_separator |= self.skip_decimal_digits(allow_numeric_separator)?;
+            has_numeric_separator |= self.skip_decimal_digits(true)?;
         }
 
         // Parse float using rust stdlib. Rust stdlib cannot handle numeric separators, so if there
