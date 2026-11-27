@@ -2505,7 +2505,11 @@ impl<'a> Parser<'a> {
                         // Wrap in chain expression if this is the first optional part
                         if !in_optional_chain {
                             let loc = self.mark_loc(start_pos);
-                            let chain_expr = ChainExpression { loc, expression: full_expr };
+                            let chain_expr = ChainExpression {
+                                loc,
+                                expression: full_expr,
+                                is_parenthesized: false,
+                            };
                             Ok(Expression::Chain(p!(self, chain_expr)))
                         } else {
                             Ok(full_expr)
@@ -2522,7 +2526,11 @@ impl<'a> Parser<'a> {
                         // Wrap in chain expression if this is the first optional part
                         if !in_optional_chain {
                             let loc = self.mark_loc(start_pos);
-                            let chain_expr = ChainExpression { loc, expression: full_expr };
+                            let chain_expr = ChainExpression {
+                                loc,
+                                expression: full_expr,
+                                is_parenthesized: false,
+                            };
                             Ok(Expression::Chain(p!(self, chain_expr)))
                         } else {
                             Ok(full_expr)
@@ -2545,7 +2553,11 @@ impl<'a> Parser<'a> {
                         // Wrap in chain expression if this is the first optional part
                         if !in_optional_chain {
                             let loc = self.mark_loc(start_pos);
-                            let chain_expr = ChainExpression { loc, expression: full_expr };
+                            let chain_expr = ChainExpression {
+                                loc,
+                                expression: full_expr,
+                                is_parenthesized: false,
+                            };
                             Ok(Expression::Chain(p!(self, chain_expr)))
                         } else {
                             Ok(full_expr)
@@ -2645,6 +2657,13 @@ impl<'a> Parser<'a> {
         // Disallow call since parenthesized arguments should be attached to this new instead
         let callee = self.parse_member_expression(callee, callee_start_pos, false, false)?;
 
+        // An optional chain is not allowed anywhere on the MemberExpression spine of a
+        // NewExpression callee. Parenthesized chains, computed keys and call arguments are fine.
+        if Self::contains_unparenthesized_chain(&callee) {
+            let loc = self.mark_loc(callee_start_pos);
+            return self.error(loc, ParseError::OptionalChainInNewCallee);
+        }
+
         let arguments = if self.token == Token::LeftParen {
             self.parse_call_arguments()?
         } else {
@@ -2653,6 +2672,18 @@ impl<'a> Parser<'a> {
 
         let loc = self.mark_loc(start_pos);
         Ok(Expression::New(p!(self, NewExpression { loc, callee, arguments })))
+    }
+
+    /// Check whether a `new` callee contains an optional chain that was not parenthesized. Only
+    /// the Member/Call/Chain spine is inspected; computed keys and call arguments are not, since
+    /// chains there are allowed.
+    fn contains_unparenthesized_chain(expr: &Expression<'a>) -> bool {
+        match expr {
+            Expression::Chain(chain) => !chain.is_parenthesized,
+            Expression::Member(member) => Self::contains_unparenthesized_chain(&member.object),
+            Expression::Call(call) => Self::contains_unparenthesized_chain(&call.callee),
+            _ => false,
+        }
     }
 
     fn parse_super_expression(&mut self, allow_call: bool) -> ParseResult<Expression<'a>> {
@@ -2851,6 +2882,7 @@ impl<'a> Parser<'a> {
                     Expression::Assign(expr) => expr.is_parenthesized = true,
                     Expression::Object(expr) => expr.is_parenthesized = true,
                     Expression::Array(expr) => expr.is_parenthesized = true,
+                    Expression::Chain(expr) => expr.is_parenthesized = true,
                     _ => {}
                 }
 

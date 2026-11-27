@@ -43,6 +43,7 @@ pub enum ParseError {
     InvalidForLeftHandSide,
     InvalidUpdateExpressionArgument,
     InvalidForAwait,
+    OptionalChainInNewCallee,
     IdentifierIsReservedWord,
     ExpectedNewTarget,
     ExpectedImportMeta,
@@ -207,6 +208,9 @@ impl fmt::Display for ParseError {
             ParseError::BigIntLeadingZero => write!(f, "BigInt cannot have a leading zero"),
             ParseError::InvalidNumericLiteralNextChar => {
                 write!(f, "This character cannot appear immediately after a numeric literal")
+            }
+            ParseError::OptionalChainInNewCallee => {
+                write!(f, "Invalid optional chain from new expression")
             }
             ParseError::TrailingNumericSeparator => write!(
                 f,

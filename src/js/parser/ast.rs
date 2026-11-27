@@ -1289,6 +1289,9 @@ pub struct MemberExpression<'a> {
 pub struct ChainExpression<'a> {
     pub loc: Loc,
     pub expression: Expression<'a>,
+    /// Whether the chain was enclosed in parentheses. Parentheses allow an optional chain in the
+    /// callee of a `new` expression, so this must be tracked even though it is not printed.
+    pub is_parenthesized: bool,
 }
 
 pub struct ConditionalExpression<'a> {
