@@ -1,0 +1,5 @@
+SyntaxError: Unexpected token function
+  ┌ parser/if_clause_function.js:1:11
+  |
+1 | if (true) function f() {}
+  |           ^

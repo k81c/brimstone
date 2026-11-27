@@ -524,6 +524,11 @@ fn check_expected_completion(
             format!("Test failed due to allocation error: {alloc_error}"),
             duration,
         ),
+        Err(EvalError::Terminated) => TestResult::failure(
+            test,
+            "Test execution was terminated by the host".to_owned(),
+            duration,
+        ),
         // Throw completions succeed if the expected result is negative, expected during runtime,
         // and has the same expected error.
         Err(EvalError::Value(thrown_value)) => match &test.expected_result {

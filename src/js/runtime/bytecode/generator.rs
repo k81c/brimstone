@@ -7437,6 +7437,14 @@ impl<'a> BytecodeFunctionGenerator<'a> {
         // And store at the binding's location. Stores at declarations do not need a TDZ check.
         if let Some(id) = func_decl.id.as_ref() {
             self.gen_store_identifier(id, closure_reg, store_flags)?;
+
+            // Annex B B.3.2: a block-level function also initializes a var binding in the
+            // enclosing var scope with the very same closure.
+            if let Some(legacy_scope) = func_decl.annex_b_legacy_var_scope {
+                if let Some(binding) = legacy_scope.as_ref().get_binding_opt(id.name) {
+                    self.gen_initialize_binding(id.name, binding, closure_reg)?;
+                }
+            }
         }
 
         self.register_allocator.release(closure_reg);

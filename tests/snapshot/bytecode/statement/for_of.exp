@@ -308,57 +308,59 @@
 }
 
 [BytecodeFunction: lhsTdz] {
-  Parameters: 0, Registers: 7
+  Parameters: 0, Registers: 8
       0: PushFunctionScope c0
-      2: LoadEmpty r2
-      4: StoreToScope r2, 0, 0
+      2: LoadEmpty r3
+      4: StoreToScope r3, 0, 0
       8: PushLexicalScope c1
-     10: LoadEmpty r2
-     12: StoreToScope r2, 0, 0
-     16: NewArray r4, 0
-     19: GetIterator r2, r3, r4
+     10: LoadEmpty r3
+     12: StoreToScope r3, 0, 0
+     16: NewArray r5, 0
+     19: GetIterator r3, r4, r5
      23: PopScope 
   .L0:
      24: PushLexicalScope c1
-     26: LoadEmpty r4
-     28: StoreToScope r4, 0, 0
-     32: IteratorNext r4, r5, r2, r3
-     37: JumpTrue r5, 28 (.L2)
-     40: StoreToScope r4, 0, 0
-     44: Mov r6, <scope>
-     47: NewClosure r1, c2
-     50: Jump 12 (.L1)
-     52: LoadImmediate r4, 0
-     55: Mov <scope>, r6
-     58: IteratorClose r2
-     60: Rethrow r5
+     26: LoadEmpty r5
+     28: StoreToScope r5, 0, 0
+     32: IteratorNext r5, r6, r3, r4
+     37: JumpTrue r6, 31 (.L2)
+     40: StoreToScope r5, 0, 0
+     44: Mov r7, <scope>
+     47: NewClosure r2, c2
+     50: Mov r0, r2
+     53: Jump 12 (.L1)
+     55: LoadImmediate r5, 0
+     58: Mov <scope>, r7
+     61: IteratorClose r3
+     63: Rethrow r6
   .L1:
-     62: PopScope 
-     63: Jump -39 (.L0)
-  .L2:
      65: PopScope 
-     66: LoadImmediate r2, 1
-     69: StoreToScope r2, 0, 0
-     73: NewArray r4, 0
-     76: GetIterator r2, r3, r4
+     66: Jump -42 (.L0)
+  .L2:
+     68: PopScope 
+     69: LoadImmediate r3, 1
+     72: StoreToScope r3, 0, 0
+     76: NewArray r5, 0
+     79: GetIterator r3, r4, r5
   .L3:
-     80: IteratorNext r4, r5, r2, r3
-     85: JumpTrue r5, 34 (.L5)
-     88: LoadFromScope r5, 0, 0
-     92: CheckTdz r5, c3
-     95: StoreToScope r4, 0, 0
-     99: Mov r6, <scope>
-    102: NewClosure r0, c4
-    105: Jump 12 (.L4)
-    107: LoadImmediate r4, 0
-    110: Mov <scope>, r6
-    113: IteratorClose r2
-    115: Rethrow r5
+     83: IteratorNext r5, r6, r3, r4
+     88: JumpTrue r6, 37 (.L5)
+     91: LoadFromScope r6, 0, 0
+     95: CheckTdz r6, c3
+     98: StoreToScope r5, 0, 0
+    102: Mov r7, <scope>
+    105: NewClosure r1, c4
+    108: Mov r0, r1
+    111: Jump 12 (.L4)
+    113: LoadImmediate r5, 0
+    116: Mov <scope>, r7
+    119: IteratorClose r3
+    121: Rethrow r6
   .L4:
-    117: Jump -37 (.L3)
+    123: Jump -40 (.L3)
   .L5:
-    119: LoadUndefined r2
-    121: Ret r2
+    125: LoadUndefined r3
+    127: Ret r3
   Constant Table:
     0: [ScopeNames]
     1: [ScopeNames]
@@ -366,10 +368,10 @@
     3: [String: y]
     4: [BytecodeFunction: inner]
   Exception Handlers:
-    40-50 -> 52 (r5)
-    58-60 -> 60
-    88-105 -> 107 (r5)
-    113-115 -> 115
+    40-53 -> 55 (r6)
+    61-63 -> 63
+    91-111 -> 113 (r6)
+    119-121 -> 121
 }
 
 [BytecodeFunction: inner] {

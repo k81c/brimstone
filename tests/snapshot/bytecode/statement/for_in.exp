@@ -200,45 +200,47 @@
 }
 
 [BytecodeFunction: lhsTdz] {
-  Parameters: 0, Registers: 5
+  Parameters: 0, Registers: 6
      0: PushFunctionScope c0
-     2: LoadEmpty r2
-     4: StoreToScope r2, 0, 0
+     2: LoadEmpty r3
+     4: StoreToScope r3, 0, 0
      8: PushLexicalScope c1
-    10: LoadEmpty r2
-    12: StoreToScope r2, 0, 0
-    16: NewObject r2, 4
-    19: JumpNullish r2, 31 (.L1)
-    22: NewForInIterator r2, r2
+    10: LoadEmpty r3
+    12: StoreToScope r3, 0, 0
+    16: NewObject r3, 4
+    19: JumpNullish r3, 34 (.L1)
+    22: NewForInIterator r3, r3
     25: PopScope 
   .L0:
     26: PushLexicalScope c1
-    28: LoadEmpty r3
-    30: StoreToScope r3, 0, 0
-    34: ForInNext r3, r2
-    37: JumpNullish r3, 13 (.L1)
-    40: StoreToScope r3, 0, 0
-    44: NewClosure r1, c2
-    47: PopScope 
-    48: Jump -22 (.L0)
-  .L1:
+    28: LoadEmpty r4
+    30: StoreToScope r4, 0, 0
+    34: ForInNext r4, r3
+    37: JumpNullish r4, 16 (.L1)
+    40: StoreToScope r4, 0, 0
+    44: NewClosure r2, c2
+    47: Mov r0, r2
     50: PopScope 
-    51: LoadImmediate r2, 1
-    54: StoreToScope r2, 0, 0
-    58: NewObject r2, 4
-    61: JumpNullish r2, 28 (.L3)
-    64: NewForInIterator r2, r2
+    51: Jump -25 (.L0)
+  .L1:
+    53: PopScope 
+    54: LoadImmediate r3, 1
+    57: StoreToScope r3, 0, 0
+    61: NewObject r3, 4
+    64: JumpNullish r3, 31 (.L3)
+    67: NewForInIterator r3, r3
   .L2:
-    67: ForInNext r3, r2
-    70: JumpNullish r3, 19 (.L3)
-    73: LoadFromScope r4, 0, 0
-    77: CheckTdz r4, c3
-    80: StoreToScope r3, 0, 0
-    84: NewClosure r0, c4
-    87: Jump -20 (.L2)
+    70: ForInNext r4, r3
+    73: JumpNullish r4, 22 (.L3)
+    76: LoadFromScope r5, 0, 0
+    80: CheckTdz r5, c3
+    83: StoreToScope r4, 0, 0
+    87: NewClosure r1, c4
+    90: Mov r0, r1
+    93: Jump -23 (.L2)
   .L3:
-    89: LoadUndefined r2
-    91: Ret r2
+    95: LoadUndefined r3
+    97: Ret r3
   Constant Table:
     0: [ScopeNames]
     1: [ScopeNames]

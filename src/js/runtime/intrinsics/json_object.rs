@@ -215,12 +215,8 @@ impl JSONObject {
         let value = arguments.get(cx, 0);
         must!(create_data_property_or_throw(cx, wrapper, cx.names.empty_string(), value));
 
-        let mut serializer = JSONSerializer::new(
-            replacer_function,
-            property_list,
-            gap,
-            cx.options.max_json_depth,
-        );
+        let mut serializer =
+            JSONSerializer::new(replacer_function, property_list, gap, cx.options.max_json_depth);
         if !serializer.serialize_json_property(cx, cx.names.empty_string(), wrapper)? {
             return Ok(cx.undefined());
         }

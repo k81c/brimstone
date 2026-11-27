@@ -24,7 +24,8 @@ use crate::{
         scope_tree::{
             ANONYMOUS_DEFAULT_EXPORT_NAME, AstScopeNode, BindingKind,
             DERIVED_CONSTRUCTOR_BINDING_NAME, HOME_OBJECT_BINDING_NAME,
-            STATIC_HOME_OBJECT_BINDING_NAME, SavedScopeTreeState, ScopeNodeKind, ScopeTree,
+            STATIC_HOME_OBJECT_BINDING_NAME, SavedScopeTreeState, ScopeNodeId, ScopeNodeKind,
+            ScopeTree,
         },
         source::Source,
         token::{RegExpToken, TemplatePartToken, Token},
@@ -97,6 +98,8 @@ bitflags! {
         const TOPLEVEL = 1 << 2;
         /// If this is a function declaration, whether the function is labeled.
         const LABELED = 1 << 3;
+        /// If this is a function declaration, whether it is the single-statement body of an `if`.
+        const IF_CLAUSE = 1 << 4;
     }
 }
 
@@ -126,6 +129,10 @@ struct Parser<'a> {
     options: Rc<Options>,
     /// Allocator used for allocating AST nodes
     alloc: AstAlloc<'a>,
+    /// Annex B B.3.2 legacy bindings to resolve once all enclosing scopes are fully parsed.
+    /// Deferring them is necessary because a lexical declaration added later in an enclosing
+    /// block can suppress the legacy var binding.
+    annex_b_legacy_candidates: Vec<(ScopeNodeId, AstPtr<Function<'a>>)>,
 }
 
 /// A save point for the parser, can be used to restore the parser to a particular position.
@@ -139,6 +146,7 @@ struct ParserSaveState<'a> {
     allow_await: bool,
     allow_yield: bool,
     allow_in: bool,
+    annex_b_legacy_candidates_len: usize,
 }
 
 fn swap_and_save<T: Copy>(reference: &mut T, new_value: T) -> T {
@@ -168,6 +176,7 @@ impl<'a> Parser<'a> {
             program_kind: ProgramKind::Script,
             options,
             alloc,
+            annex_b_legacy_candidates: Vec::new(),
         }
     }
 
@@ -187,6 +196,7 @@ impl<'a> Parser<'a> {
             allow_await: self.allow_await,
             allow_yield: self.allow_yield,
             allow_in: self.allow_in,
+            annex_b_legacy_candidates_len: self.annex_b_legacy_candidates.len(),
         }
     }
 
@@ -201,11 +211,14 @@ impl<'a> Parser<'a> {
         self.allow_await = save_state.allow_await;
         self.allow_yield = save_state.allow_yield;
         self.allow_in = save_state.allow_in;
+        self.annex_b_legacy_candidates
+            .truncate(save_state.annex_b_legacy_candidates_len);
     }
 
     fn set_in_strict_mode(&mut self, in_strict_mode: bool) {
         self.in_strict_mode = in_strict_mode;
         self.lexer.in_strict_mode = in_strict_mode;
+        self.scope_builder.set_in_strict_mode(in_strict_mode);
     }
 
     /// Initialize the parser for parsing the function parameters or body in a dynamically created
@@ -436,6 +449,8 @@ impl<'a> Parser<'a> {
             toplevels.push(self.parse_toplevel()?);
         }
 
+        self.resolve_annex_b_legacy_bindings();
+
         // Start out at beginning of file
         let loc = self.mark_loc(0);
 
@@ -505,6 +520,8 @@ impl<'a> Parser<'a> {
                 _ => toplevels.push(self.parse_toplevel()?),
             }
         }
+
+        self.resolve_annex_b_legacy_bindings();
 
         // Start out at beginning of file
         let loc = self.mark_loc(0);
@@ -881,6 +898,7 @@ impl<'a> Parser<'a> {
                 let binding_kind = BindingKind::Function {
                     is_lexical: !is_var_scoped,
                     is_expression: false,
+                    is_plain_function_declaration: !is_async && !is_generator,
                     func_node: AstPtr::from_ref(func.as_ref()),
                     parameter_index: None,
                 };
@@ -892,6 +910,7 @@ impl<'a> Parser<'a> {
                 let kind = BindingKind::Function {
                     is_lexical: false,
                     is_expression: false,
+                    is_plain_function_declaration: !is_async && !is_generator,
                     func_node: AstPtr::from_ref(func.as_ref()),
                     parameter_index: None,
                 };
@@ -920,6 +939,7 @@ impl<'a> Parser<'a> {
             let kind = BindingKind::Function {
                 is_lexical: false,
                 is_expression: true,
+                is_plain_function_declaration: false,
                 func_node: AstPtr::from_ref(func.as_ref()),
                 parameter_index: None,
             };
@@ -1214,6 +1234,8 @@ impl<'a> Parser<'a> {
             body.push(self.parse_statement_list_item(FunctionContext::TOPLEVEL)?)
         }
 
+        self.resolve_annex_b_legacy_bindings();
+
         // Restore to strict mode context from before this function
         self.set_in_strict_mode(old_in_strict_mode);
 
@@ -1230,12 +1252,103 @@ impl<'a> Parser<'a> {
             body.push(self.parse_statement_list_item(FunctionContext::empty())?)
         }
 
+        self.add_annex_b_legacy_bindings(&body);
+
         self.scope_builder.exit_scope();
 
         self.advance()?;
         let loc = self.mark_loc(start_pos);
 
         Ok(Block { loc, body: body.build(), scope })
+    }
+
+    /// Record the function declarations in a block that need an Annex B B.3.2 legacy var binding.
+    /// The binding itself is created only once all enclosing scopes have been parsed, since a
+    /// lexical declaration added later in an enclosing block can suppress it.
+    fn add_annex_b_legacy_bindings(&mut self, body: &[Statement<'a>]) {
+        if !self.options.annex_b || self.in_strict_mode {
+            return;
+        }
+
+        let source_scope_id = self.scope_builder.current_scope().as_ref().id();
+
+        for stmt in body {
+            let Statement::FuncDecl(func) = stmt else {
+                continue;
+            };
+
+            let Some(id) = func.id.as_ref() else {
+                continue;
+            };
+
+            // B.3.2 only applies to ordinary function declarations.
+            if func.is_async() || func.is_generator() {
+                continue;
+            }
+
+            if !matches!(id.get_binding().kind(), BindingKind::Function { is_lexical: true, .. }) {
+                continue;
+            }
+
+            self.annex_b_legacy_candidates
+                .push((source_scope_id, AstPtr::from_ref(func.as_ref())));
+        }
+    }
+
+    /// Create the deferred legacy var bindings now that every enclosing scope is complete.
+    fn resolve_annex_b_legacy_bindings(&mut self) {
+        let candidates = std::mem::take(&mut self.annex_b_legacy_candidates);
+
+        for (source_scope_id, mut func_ptr) in candidates {
+            let Some(name) = func_ptr.as_ref().id.as_ref().map(|id| id.name) else {
+                continue;
+            };
+
+            if let Some(scope) = self
+                .scope_builder
+                .add_annex_b_legacy_binding(source_scope_id, name)
+            {
+                func_ptr.as_mut().annex_b_legacy_var_scope = Some(scope);
+            }
+        }
+    }
+
+    /// Whether the current token starts a plain function declaration that Annex B treats as the
+    /// sole item of a synthetic block. Async and generator functions are excluded.
+    fn is_annex_b_function_clause(&mut self) -> ParseResult<bool> {
+        Ok(self.options.annex_b
+            && !self.in_strict_mode
+            && self.token == Token::Function
+            && self.peek()? != Token::Multiply)
+    }
+
+    /// Parse a function declaration as the sole item of a synthetic block, so that the ordinary
+    /// B.3.2 machinery (lexical binding plus legacy var binding) applies to it.
+    fn parse_synthetic_function_statement(
+        &mut self,
+        ctx_flags: FunctionContext,
+    ) -> ParseResult<Statement<'a>> {
+        let start_pos = self.current_start_pos();
+        let scope = self.scope_builder.enter_scope(ScopeNodeKind::Block);
+
+        let func = self.parse_function_declaration(ctx_flags)?;
+        let body = self.alloc_vec_with_element(Statement::FuncDecl(func));
+        self.add_annex_b_legacy_bindings(&body);
+
+        self.scope_builder.exit_scope();
+
+        let loc = self.mark_loc(start_pos);
+        Ok(Statement::Block(p!(self, Block { loc, body: body.build(), scope })))
+    }
+
+    /// Parse the single statement body of an `if` clause. In sloppy Annex B mode a plain function
+    /// declaration is accepted via a synthetic block.
+    fn parse_if_clause_statement(&mut self) -> ParseResult<Statement<'a>> {
+        if self.is_annex_b_function_clause()? {
+            return self.parse_synthetic_function_statement(FunctionContext::IF_CLAUSE);
+        }
+
+        self.parse_statement()
     }
 
     fn parse_if_statement(&mut self) -> ParseResult<Statement<'a>> {
@@ -1246,11 +1359,11 @@ impl<'a> Parser<'a> {
         let test = self.parse_outer_expression()?;
         self.expect(Token::RightParen)?;
 
-        let conseq = self.parse_statement()?;
+        let conseq = self.parse_if_clause_statement()?;
 
         let altern = if self.token == Token::Else {
             self.advance()?;
-            Some(self.parse_statement()?)
+            Some(self.parse_if_clause_statement()?)
         } else {
             None
         };
@@ -1295,7 +1408,12 @@ impl<'a> Parser<'a> {
                         && self.token != Token::Default
                         && self.token != Token::RightBrace
                     {
-                        body.push(self.parse_statement_list_item(FunctionContext::empty())?)
+                        let stmt = if self.is_annex_b_function_clause()? {
+                            self.parse_synthetic_function_statement(FunctionContext::empty())?
+                        } else {
+                            self.parse_statement_list_item(FunctionContext::empty())?
+                        };
+                        body.push(stmt)
                     }
 
                     let loc = self.mark_loc(case_start_pos);

@@ -21,6 +21,7 @@ pub struct ScopeTree<'a> {
     current_node_id: ScopeNodeId,
     alloc: AstAlloc<'a>,
     options: Rc<Options>,
+    in_strict_mode: bool,
 }
 
 pub struct SavedScopeTreeState {
@@ -44,6 +45,7 @@ impl<'a> ScopeTree<'a> {
             current_node_id: INITIAL_SCOPE_ID,
             alloc,
             options,
+            in_strict_mode: false,
         };
 
         // Push the global scope node
@@ -143,6 +145,10 @@ impl<'a> ScopeTree<'a> {
         self.current_node_id = node_id;
     }
 
+    pub fn set_in_strict_mode(&mut self, in_strict_mode: bool) {
+        self.in_strict_mode = in_strict_mode;
+    }
+
     fn get_ast_node(&self, node_id: ScopeNodeId) -> &AstScopeNode<'a> {
         &self.ast_nodes[node_id]
     }
@@ -229,6 +235,15 @@ impl<'a> ScopeTree<'a> {
         name: AstStr<'a>,
         kind: BindingKind<'a>,
     ) -> AddBindingResult<'a> {
+        // Annex B allows duplicate function declarations in a Block or CaseBlock in sloppy mode.
+        // Redeclare in place so that all references share a slot, with the last declaration's
+        // function winning.
+        if self.is_annex_b_duplicate_function(name, &kind) {
+            let node = self.get_ast_node_mut(self.current_node_id);
+            node.bindings.get_mut(name).unwrap().set_kind(kind);
+            return Ok(self.get_ast_node_ptr(self.current_node_id));
+        }
+
         let node = self.get_ast_node_mut(self.current_node_id);
 
         if let Some(err) = node.error_if_lexical_name_already_declared(name) {
@@ -369,6 +384,103 @@ impl<'a> ScopeTree<'a> {
                 {
                     node.extra_var_names.insert(name);
                 }
+            }
+
+            node_id = node.parent.unwrap();
+        }
+    }
+
+    /// Whether a duplicate lexical function declaration is allowed by Annex B in the current
+    /// Block/CaseBlock. Only non-strict Annex B blocks qualify, and only when the existing name is
+    /// another lexical function declaration rather than a var name from a child scope.
+    fn is_annex_b_duplicate_function(&self, name: AstStr, kind: &BindingKind<'a>) -> bool {
+        if !self.options.annex_b || self.in_strict_mode {
+            return false;
+        }
+
+        let node = self.get_ast_node(self.current_node_id);
+        if !matches!(node.kind, ScopeNodeKind::Block | ScopeNodeKind::Switch)
+            || node.extra_var_names.contains(name)
+        {
+            return false;
+        }
+
+        let is_plain_block_function = |kind: &BindingKind| {
+            matches!(
+                kind,
+                BindingKind::Function {
+                    is_lexical: true,
+                    is_expression: false,
+                    is_plain_function_declaration: true,
+                    ..
+                }
+            )
+        };
+
+        is_plain_block_function(kind)
+            && node
+                .bindings
+                .get(name)
+                .is_some_and(|b| is_plain_block_function(b.kind()))
+    }
+
+    /// Add the var binding required by Annex B B.3.2 for a block-level function declaration.
+    ///
+    /// Unlike a normal var binding, this does not record the name in intermediate scopes (which
+    /// would incorrectly conflict with a later lexical declaration there), and it silently skips
+    /// the binding entirely when it would conflict with a lexical declaration.
+    /// Returns the scope node that received the binding, if any.
+    pub fn add_annex_b_legacy_binding(
+        &mut self,
+        source_scope_id: ScopeNodeId,
+        name: AstStr<'a>,
+    ) -> Option<AstPtr<AstScopeNode<'a>>> {
+        // Skip the block/switch scope itself: the function's own lexical binding lives there.
+        let mut node_id = self.get_ast_node(source_scope_id).parent.unwrap();
+        let mut in_with_statement = false;
+
+        loop {
+            let node = self.get_ast_node(node_id);
+
+            if let Some(binding) = node.bindings.get(name) {
+                // A lexical declaration anywhere on the path is a conflict, and a binding derived
+                // from a function parameter must keep the parameter's value (B.3.2).
+                if binding.kind().is_lexically_scoped()
+                    || matches!(
+                        binding.kind(),
+                        BindingKind::FunctionParameter { .. }
+                            | BindingKind::Function { parameter_index: Some(_), .. }
+                    )
+                {
+                    return None;
+                }
+            }
+
+            if node.kind == ScopeNodeKind::With {
+                in_with_statement = true;
+            }
+
+            if node.kind.is_hoist_target() {
+                if node.bindings.get(name).is_none() {
+                    let vm_location = if in_with_statement {
+                        Some(VMLocation::WithVar)
+                    } else if node.kind == ScopeNodeKind::Global {
+                        Some(VMLocation::Global)
+                    } else if matches!(node.kind, ScopeNodeKind::Eval { is_strict: false, .. }) {
+                        Some(VMLocation::EvalVar)
+                    } else {
+                        None
+                    };
+
+                    self.get_ast_node_mut(node_id).add_binding(
+                        name,
+                        BindingKind::Var,
+                        vm_location,
+                        false,
+                    );
+                }
+
+                return Some(self.get_ast_node_ptr(node_id));
             }
 
             node_id = node.parent.unwrap();
@@ -1124,6 +1236,9 @@ pub enum BindingKind<'a> {
         is_lexical: bool,
         /// Whether this is the name of a function expression.
         is_expression: bool,
+        /// Whether this is a plain FunctionDeclaration rather than an async or generator
+        /// declaration. Only plain declarations get the Annex B duplicate-declaration exception.
+        is_plain_function_declaration: bool,
         /// Function AST node.
         func_node: AstPtr<ast::Function<'a>>,
         /// If this function declaration overwrote a function parameter with the same name, the
@@ -1330,6 +1445,10 @@ impl<'a> Binding<'a> {
 
     pub fn kind(&self) -> &BindingKind<'a> {
         &self.kind
+    }
+
+    fn set_kind(&mut self, kind: BindingKind<'a>) {
+        self.kind = kind;
     }
 
     pub fn is_immutable(&self) -> bool {

@@ -1,0 +1,5 @@
+SyntaxError: Unexpected token function
+  ┌ parser/while_body_function.js:1:15
+  |
+1 | while (false) function f() {}
+  |               ^

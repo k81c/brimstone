@@ -345,31 +345,32 @@
 }
 
 [BytecodeFunction: blockScopes] {
-  Parameters: 0, Registers: 2
+  Parameters: 0, Registers: 3
      0: PushFunctionScope c0
-     2: LoadImmediate r1, 1
-     5: StoreToScope r1, 0, 0
+     2: LoadImmediate r2, 1
+     5: StoreToScope r2, 0, 0
      9: PushLexicalScope c1
-    11: LoadEmpty r1
-    13: StoreToScope r1, 0, 0
-    17: LoadImmediate r1, 2
-    20: StoreToScope r1, 0, 0
+    11: LoadEmpty r2
+    13: StoreToScope r2, 0, 0
+    17: LoadImmediate r2, 2
+    20: StoreToScope r2, 0, 0
     24: PushLexicalScope c2
-    26: LoadEmpty r1
-    28: StoreToScope r1, 0, 0
-    32: LoadImmediate r1, 3
-    35: StoreToScope r1, 0, 0
+    26: LoadEmpty r2
+    28: StoreToScope r2, 0, 0
+    32: LoadImmediate r2, 3
+    35: StoreToScope r2, 0, 0
     39: PushLexicalScope c3
-    41: LoadEmpty r1
-    43: StoreToScope r1, 0, 0
-    47: NewClosure r0, c4
-    50: LoadImmediate r1, 4
-    53: StoreToScope r1, 0, 0
-    57: PopScope 
-    58: PopScope 
-    59: PopScope 
-    60: LoadUndefined r1
-    62: Ret r1
+    41: LoadEmpty r2
+    43: StoreToScope r2, 0, 0
+    47: NewClosure r1, c4
+    50: Mov r0, r1
+    53: LoadImmediate r2, 4
+    56: StoreToScope r2, 0, 0
+    60: PopScope 
+    61: PopScope 
+    62: PopScope 
+    63: LoadUndefined r2
+    65: Ret r2
   Constant Table:
     0: [ScopeNames]
     1: [ScopeNames]
@@ -398,23 +399,25 @@
 }
 
 [BytecodeFunction: popBetweenBlocks] {
-  Parameters: 0, Registers: 3
+  Parameters: 0, Registers: 5
      0: PushLexicalScope c0
-     2: LoadEmpty r2
-     4: StoreToScope r2, 0, 0
-     8: NewClosure r1, c1
-    11: LoadImmediate r2, 1
-    14: StoreToScope r2, 0, 0
-    18: PopScope 
-    19: PushLexicalScope c2
-    21: LoadEmpty r2
-    23: StoreToScope r2, 0, 0
-    27: NewClosure r0, c3
-    30: LoadImmediate r2, 2
-    33: StoreToScope r2, 0, 0
-    37: PopScope 
-    38: LoadUndefined r2
-    40: Ret r2
+     2: LoadEmpty r4
+     4: StoreToScope r4, 0, 0
+     8: NewClosure r3, c1
+    11: Mov r0, r3
+    14: LoadImmediate r4, 1
+    17: StoreToScope r4, 0, 0
+    21: PopScope 
+    22: PushLexicalScope c2
+    24: LoadEmpty r4
+    26: StoreToScope r4, 0, 0
+    30: NewClosure r2, c3
+    33: Mov r1, r2
+    36: LoadImmediate r4, 2
+    39: StoreToScope r4, 0, 0
+    43: PopScope 
+    44: LoadUndefined r4
+    46: Ret r4
   Constant Table:
     0: [ScopeNames]
     1: [BytecodeFunction: innner1]

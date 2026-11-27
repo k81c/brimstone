@@ -1,0 +1,5 @@
+SyntaxError: Unexpected token function
+  ┌ annex_b/statement/if_clause_strict.js:2:11
+  |
+2 | if (true) function f() {}
+  |           ^

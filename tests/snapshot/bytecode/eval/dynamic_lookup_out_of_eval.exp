@@ -123,14 +123,16 @@
 
 [BytecodeFunction: <eval>] {
   Parameters: 0, Registers: 3
-    0: NewClosure r2, c0
-    3: StoreDynamic r2, c1
-    6: NewClosure r0, c2
-    9: Ret r1
+     0: NewClosure r2, c0
+     3: StoreDynamic r2, c1
+     6: NewClosure r0, c2
+     9: StoreDynamic r0, c3
+    12: Ret r1
   Constant Table:
     0: [BytecodeFunction: varFunc]
     1: [String: varFunc]
     2: [BytecodeFunction: lexFunc]
+    3: [String: lexFunc]
 }
 
 [BytecodeFunction: varFunc] {

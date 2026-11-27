@@ -43,16 +43,17 @@
 }
 
 [BytecodeFunction: captures] {
-  Parameters: 0, Registers: 2
+  Parameters: 0, Registers: 3
      0: PushLexicalScope c0
-     2: LoadEmpty r1
-     4: StoreToScope r1, 0, 0
-     8: NewClosure r0, c1
-    11: LoadImmediate r1, 1
-    14: StoreToScope r1, 0, 0
-    18: PopScope 
-    19: LoadUndefined r1
-    21: Ret r1
+     2: LoadEmpty r2
+     4: StoreToScope r2, 0, 0
+     8: NewClosure r1, c1
+    11: Mov r0, r1
+    14: LoadImmediate r2, 1
+    17: StoreToScope r2, 0, 0
+    21: PopScope 
+    22: LoadUndefined r2
+    24: Ret r2
   Constant Table:
     0: [ScopeNames]
     1: [BytecodeFunction: foo]

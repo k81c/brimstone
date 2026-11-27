@@ -471,6 +471,10 @@ pub struct Function<'a> {
 
     /// Scope node for the function, containing function parameters and the body.
     pub scope: AstPtr<AstScopeNode<'a>>,
+
+    /// Enclosing var scope whose binding receives this closure under Annex B B.3.2. Only set for
+    /// block-level function declarations in sloppy mode with Annex B enabled.
+    pub annex_b_legacy_var_scope: Option<AstPtr<AstScopeNode<'a>>>,
 }
 
 impl<'a> Function<'a> {
@@ -489,6 +493,7 @@ impl<'a> Function<'a> {
             body: AstBox::new_in(body, alloc),
             flags: FunctionFlags::empty(),
             scope: AstPtr::uninit(),
+            annex_b_legacy_var_scope: None,
         }
     }
 

@@ -1,0 +1,5 @@
+SyntaxError: Unexpected token async
+  ┌ annex_b/statement/if_clause_async.js:1:11
+  |
+1 | if (true) async function f() {}
+  |           ^
