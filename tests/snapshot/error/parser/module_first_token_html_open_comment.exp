@@ -1,0 +1,5 @@
+SyntaxError: Unexpected token <
+  ┌ parser/module_first_token_html_open_comment.js:1:1
+  |
+1 | <!-- comment
+  | ^

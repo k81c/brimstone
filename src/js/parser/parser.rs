@@ -5108,6 +5108,12 @@ pub fn parse_module(
     let lexer = Lexer::new(pcx.source(), &options, alloc);
     let mut parser =
         Parser::new(lexer, ScopeTree::new_module(options.clone(), alloc), options, alloc);
+
+    // Modules are always strict and never allow HTML-like comments. These must be set before the
+    // first token is lexed, since strict-dependent lexing cannot be undone by a re-parse.
+    parser.set_in_strict_mode(true);
+    parser.lexer.is_module = true;
+
     parser.advance()?;
 
     parser.parse_module()

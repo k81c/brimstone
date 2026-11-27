@@ -1,0 +1,5 @@
+SyntaxError: Cannot use `0`-prefixed octal literals in strict mode
+  ┌ parser/module_first_token_legacy_octal.js:1:1
+  |
+1 | 0755;
+  | ^

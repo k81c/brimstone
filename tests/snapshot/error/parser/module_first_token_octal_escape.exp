@@ -1,0 +1,5 @@
+SyntaxError: Octal escape sequences are not allowed in strict mode
+  ┌ parser/module_first_token_octal_escape.js:1:2
+  |
+1 | '\101';
+  |  ^
