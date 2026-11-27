@@ -1526,7 +1526,15 @@ impl<'a> Analyzer<'a> {
         is_for_each_init: bool,
     ) {
         for declaration in var_decl.declarations.iter() {
-            if var_decl.kind == VarKind::Const && declaration.init.is_none() && !is_for_each_init {
+            if declaration.init.is_none() && !declaration.id.is_id() && !is_for_each_init {
+                self.emit_error(declaration.loc, ParseError::PatternInitializerRequired);
+            }
+
+            if var_decl.kind == VarKind::Const
+                && declaration.init.is_none()
+                && declaration.id.is_id()
+                && !is_for_each_init
+            {
                 self.emit_error(declaration.loc, ParseError::ConstWithoutInitializer);
             }
 

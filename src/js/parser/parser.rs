@@ -782,8 +782,28 @@ impl<'a> Parser<'a> {
         }
 
         let loc = self.mark_loc(start_pos);
+        let var_decl = VariableDeclaration { loc, kind, declarations: declarations.build() };
 
-        Ok(VariableDeclaration { loc, kind, declarations: declarations.build() })
+        // A BindingPattern declarator requires an initializer. For-loop heads are validated by
+        // the caller, since a for-in/of head is allowed to leave the pattern uninitialized.
+        if !is_for_init {
+            self.check_pattern_initializers(&var_decl)?;
+        }
+
+        Ok(var_decl)
+    }
+
+    fn check_pattern_initializers(
+        &mut self,
+        var_decl: &VariableDeclaration<'a>,
+    ) -> ParseResult<()> {
+        for declaration in var_decl.declarations.iter() {
+            if declaration.init.is_none() && !declaration.id.is_id() {
+                return self.error(declaration.loc, ParseError::PatternInitializerRequired);
+            }
+        }
+
+        Ok(())
     }
 
     fn set_binding_init_pos(pattern: &Pattern, pos: Pos) {
@@ -1352,6 +1372,7 @@ impl<'a> Parser<'a> {
                     self.parse_for_each_statement(init, start_pos, is_await, scope)?
                 }
                 _ => {
+                    self.check_pattern_initializers(&var_decl)?;
                     let init = Some(p!(self, ForInit::VarDecl(var_decl)));
                     self.expect(Token::Semicolon)?;
                     self.parse_for_statement(init, start_pos, scope)?

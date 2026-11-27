@@ -6700,8 +6700,14 @@ impl<'a> BytecodeFunctionGenerator<'a> {
 
                 self.exit_has_assign_expr_context();
             } else if var_decl.kind == ast::VarKind::Let {
-                // Let declarations without an initializer are initialized to undefined
-                let id = decl.id.to_id();
+                // Let declarations without an initializer are initialized to undefined.
+                // Pattern declarators without an initializer are rejected before code generation.
+                let id = match &decl.id {
+                    ast::Pattern::Id(id) => id,
+                    _ => unreachable!(
+                        "pattern declarator without initializer must be rejected by the parser"
+                    ),
+                };
                 let store_flags = StoreFlags::INITIALIZATION;
                 let init_value_dest = self.expr_dest_for_id(id, store_flags);
                 let init_value = self.allocate_destination(init_value_dest)?;

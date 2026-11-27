@@ -87,6 +87,7 @@ pub enum ParseError {
     SuperCallOutsideDerivedConstructor,
     DuplicateProtoProperty,
     ConstWithoutInitializer,
+    PatternInitializerRequired,
     LetNameInLexicalDeclaration,
     GetterWrongNumberOfParams,
     SetterWrongNumberOfParams,
@@ -381,6 +382,9 @@ impl fmt::Display for ParseError {
             }
             ParseError::ConstWithoutInitializer => {
                 write!(f, "Const declarations must have an initializer")
+            }
+            ParseError::PatternInitializerRequired => {
+                write!(f, "Missing initializer in destructuring declaration")
             }
             ParseError::LetNameInLexicalDeclaration => {
                 write!(f, "Lexical declarations cannot define a `let` binding")
